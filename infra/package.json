@@ -1,0 +1,17 @@
+{
+  "name": "@sitesentinel/infra",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@sitesentinel/core": "workspace:*",
+    "sst": "^3.3.33"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.2"
+  }
+}
