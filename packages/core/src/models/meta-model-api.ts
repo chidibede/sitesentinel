@@ -1,16 +1,14 @@
 /**
- * Meta Model API provider for Muse Spark, SAM 3.1, and Muse Voice Transcribe
+ * Meta Model API provider for SAM 3.1, Muse Spark, and Muse Voice Transcribe
  *
- * API Reference:
+ * Verified API Details (2026-10-28):
  * - Base URL: https://api.meta.ai/v1
  * - Auth: Bearer token via META_API_KEY
- * - Models: muse-spark-1.3, sam-3.1, muse-voice-transcribe-1.0
+ * - Models: sam-3.1, muse-spark-1.3, muse-voice-transcribe-1.0
  *
- * Endpoints:
- * - POST /v1/responses (OpenAI-compatible)
- * - POST /v1/chat/completions (OpenAI-compatible)
- * - POST /v1/asr/transcribe (audio file transcription)
- * - WSS /v1/asr/realtime (streaming audio transcription)
+ * POST /v1/responses with OpenAI-compatible input format
+ * SAM returns special token strings with boxes and masks
+ * Muse Spark returns output array with reasoning and message items
  */
 
 export interface MetaModelAPIConfig {
@@ -18,41 +16,153 @@ export interface MetaModelAPIConfig {
   baseURL?: string;
 }
 
-export interface SAMSegmentationResult {
+export interface BoundingBox {
   objectId: number;
-  box: {
-    x1: number;
-    y1: number;
-    x2: number;
-    y2: number;
-  };
-  mask: string; // Token-encoded mask data
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  width: number;
+  height: number;
 }
 
-export interface AudioTranscriptionOptions {
-  model?: string;
-  audioEncoding?: 'PCM_16KHZ' | 'PCM_24KHZ';
-  mode?: 'PUSH_TO_TALK' | 'ENDPOINTING' | 'DIARIZATION';
+export interface MaskData {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  data: string; // Encoded mask data
 }
 
-export interface TranscriptionResult {
-  text: string;
-  speakers?: Array<{
-    speaker: string;
-    text: string;
-    startMs?: number;
-    endMs?: number;
+export interface SAMDetection {
+  objectId: number;
+  box: BoundingBox;
+  mask: MaskData;
+}
+
+export interface SAMSegmentationResult {
+  concept: string;
+  detections: SAMDetection[];
+  imageWidth: number;
+  imageHeight: number;
+}
+
+export interface MuseSparkMessage {
+  role: 'user' | 'assistant' | 'system';
+  content: Array<{
+    type: 'input_text' | 'input_image' | 'output_text';
+    text?: string;
+    image_url?: string;
   }>;
 }
 
+export interface MuseSparkResponse {
+  content: string;
+  reasoning?: string;
+  usage?: {
+    inputTokens: number;
+    outputTokens: number;
+    reasoningTokens: number;
+    totalTokens: number;
+  };
+}
+
 /**
- * Meta Model API provider - implementation placeholder
+ * Parse SAM 3.1 output token string into structured detections
  *
- * TODO: Implement once Meta Model API access is available
- * This is a typed interface stub based on the official documentation:
- * - https://dev.meta.ai/docs/api-reference
- * - https://dev.meta.ai/docs/sam/overview
- * - https://dev.meta.ai/docs/speech-to-text/
+ * Format: <0f>objId<|box;x1=X;y1=Y;x2=X2;y2=Y2;w=W;h=H|><|mask;x=X;y=Y;data=W,H,ENCODED|>,...
+ * Empty string means no matches found
+ */
+export function parseSAMOutput(tokenString: string): {
+  detections: SAMDetection[];
+  imageWidth: number;
+  imageHeight: number;
+} {
+  if (!tokenString || tokenString.trim() === '') {
+    return { detections: [], imageWidth: 0, imageHeight: 0 };
+  }
+
+  // Extract frame marker and detections
+  const frameMatch = tokenString.match(/<(\d+)f>/);
+  if (!frameMatch) {
+    throw new Error('Invalid SAM output: missing frame marker');
+  }
+
+  // Parse all object detections
+  const detections: SAMDetection[] = [];
+  let imageWidth = 0;
+  let imageHeight = 0;
+
+  // Regex to match: objId<|box;...|><|mask;...|>
+  const detectionPattern =
+    /(\d+)<\|box;x1=(\d+);y1=(\d+);x2=(\d+);y2=(\d+);w=(\d+);h=(\d+)\|><\|mask;x=(\d+);y=(\d+);data=([^|]+)\|>/g;
+
+  let match;
+  while ((match = detectionPattern.exec(tokenString)) !== null) {
+    const [
+      ,
+      objIdStr,
+      x1Str,
+      y1Str,
+      x2Str,
+      y2Str,
+      wStr,
+      hStr,
+      maskXStr,
+      maskYStr,
+      maskDataStr,
+    ] = match;
+
+    if (
+      !objIdStr ||
+      !x1Str ||
+      !y1Str ||
+      !x2Str ||
+      !y2Str ||
+      !wStr ||
+      !hStr ||
+      !maskXStr ||
+      !maskYStr ||
+      !maskDataStr
+    ) {
+      continue;
+    }
+
+    imageWidth = parseInt(wStr, 10);
+    imageHeight = parseInt(hStr, 10);
+
+    // Parse mask data: "W,H,ENCODED_DATA"
+    const maskParts = maskDataStr.split(',');
+    const maskWidth = parseInt(maskParts[0] ?? '0', 10);
+    const maskHeight = parseInt(maskParts[1] ?? '0', 10);
+    const encodedData = maskParts.slice(2).join(',');
+
+    detections.push({
+      objectId: parseInt(objIdStr, 10),
+      box: {
+        objectId: parseInt(objIdStr, 10),
+        x1: parseInt(x1Str, 10),
+        y1: parseInt(y1Str, 10),
+        x2: parseInt(x2Str, 10),
+        y2: parseInt(y2Str, 10),
+        width: imageWidth,
+        height: imageHeight,
+      },
+      mask: {
+        x: parseInt(maskXStr, 10),
+        y: parseInt(maskYStr, 10),
+        width: maskWidth,
+        height: maskHeight,
+        data: encodedData,
+      },
+    });
+  }
+
+  return { detections, imageWidth, imageHeight };
+}
+
+/**
+ * Meta Model API client for SiteSentinel
  */
 export class MetaModelAPIProvider {
   private config: MetaModelAPIConfig;
@@ -65,100 +175,174 @@ export class MetaModelAPIProvider {
   }
 
   /**
-   * Get the base URL for API requests
-   * Used internally by all API methods
+   * Segment objects in an image using SAM 3.1
+   *
+   * @param imageUrl - Data URL (base64) of the image
+   * @param concept - Short noun phrase (e.g., "hard hat", "person", "guardrail")
+   * @returns Segmentation result with bounding boxes and masks
    */
-  private getBaseURL(): string {
-    return this.config.baseURL ?? 'https://api.meta.ai/v1';
-  }
+  async segmentImage(
+    imageUrl: string,
+    concept: string
+  ): Promise<SAMSegmentationResult> {
+    const response = await fetch(`${this.config.baseURL}/responses`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${this.config.apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'sam-3.1',
+        metadata: { mask_encoding: 'one_bit' },
+        input: [
+          {
+            type: 'message',
+            role: 'user',
+            content: [
+              { type: 'input_text', text: concept },
+              { type: 'input_image', image_url: imageUrl },
+            ],
+          },
+        ],
+      }),
+    });
 
-  /**
-   * Get authorization headers for API requests
-   * Used internally by all API methods
-   */
-  private getAuthHeaders(): Record<string, string> {
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({})) as {
+        error?: { message?: string };
+      };
+      throw new Error(
+        `SAM API error (${response.status}): ${error.error?.message ?? response.statusText}`
+      );
+    }
+
+    const data = (await response.json()) as {
+      output: Array<{
+        type: string;
+        content: Array<{ type: string; text: string }>;
+      }>;
+    };
+
+    // Find the message output
+    const messageOutput = data.output.find((item) => item.type === 'message');
+    if (!messageOutput) {
+      throw new Error('No message output in SAM response');
+    }
+
+    const textContent = messageOutput.content.find(
+      (c) => c.type === 'output_text'
+    );
+    if (!textContent) {
+      throw new Error('No text content in SAM message');
+    }
+
+    const parsed = parseSAMOutput(textContent.text);
+
     return {
-      Authorization: `Bearer ${this.config.apiKey}`,
-      'Content-Type': 'application/json',
+      concept,
+      ...parsed,
     };
   }
 
   /**
-   * Segment objects in an image using SAM 3.1
+   * Generate completion using Muse Spark 1.3
    *
-   * @param imageUrl - URL or base64 data URL of the image
-   * @param prompt - Short noun phrase describing the object to segment (e.g., "hard hat", "safety vest")
-   * @returns Array of segmentation results with bounding boxes and masks
-   *
-   * Reference: https://dev.meta.ai/docs/sam/overview
-   */
-  async segmentImage(
-    _imageUrl: string,
-    _prompt: string
-  ): Promise<SAMSegmentationResult[]> {
-    // TODO: Implement SAM 3.1 segmentation
-    // POST to /v1/responses with model: "sam-3.1"
-    // Will use: this.getBaseURL(), this.getAuthHeaders()
-    // Request shape:
-    // {
-    //   model: "sam-3.1",
-    //   input: [
-    //     { type: "message", role: "user", content: [
-    //       { type: "input_text", text: prompt },
-    //       { type: "input_image", image_url: imageUrl }
-    //     ]}
-    //   ],
-    //   stream: true
-    // }
-    // Parse output_text deltas for box/mask tokens per frame
-    // Will use: this.getBaseURL(), this.getAuthHeaders()
-    throw new Error('SAM 3.1 segmentation not yet implemented');
-  }
-
-  /**
-   * Transcribe audio using Muse Voice Transcribe
-   *
-   * @param audioData - Audio file buffer (mono 16-bit PCM WAV, 16kHz or 24kHz)
-   * @param options - Transcription options
-   * @returns Transcription result with text and optional speaker diarization
-   *
-   * Reference: https://dev.meta.ai/docs/speech-to-text/
-   */
-  async transcribeAudio(
-    _audioData: Buffer,
-    _options: AudioTranscriptionOptions = {}
-  ): Promise<TranscriptionResult> {
-    // TODO: Implement audio transcription
-    // POST multipart to /v1/asr/transcribe
-    // Form fields: "request" (JSON config) and "audio" (WAV file)
-    // Request config:
-    // {
-    //   model: "muse-voice-transcribe-1.0",
-    //   audioEncoding: "PCM_16KHZ" | "PCM_24KHZ",
-    //   mode: "ENDPOINTING" | "DIARIZATION"
-    // }
-    // Will use: this.getBaseURL(), this.getAuthHeaders()
-    throw new Error('Audio transcription not yet implemented');
-  }
-
-  /**
-   * Generate completion using Muse Spark
-   *
-   * @param messages - Chat messages
+   * @param messages - Chat messages with optional images
    * @param options - Generation options
-   * @returns Model response
-   *
-   * Reference: https://dev.meta.ai/docs/models
+   * @returns Model response with content and optional reasoning
    */
   async generateCompletion(
-    _messages: unknown[],
-    _options: { maxTokens?: number; temperature?: number } = {}
-  ): Promise<{ content: string | null; reasoning?: string }> {
-    // TODO: Implement Muse Spark completion
-    // POST to /v1/responses or /v1/chat/completions
-    // Model: "muse-spark-1.3"
-    // OpenAI-compatible format
-    // Will use: this.getBaseURL(), this.getAuthHeaders()
-    throw new Error('Muse Spark completion not yet implemented');
+    messages: MuseSparkMessage[],
+    options: {
+      reasoningEffort?: 'low' | 'medium' | 'high';
+      temperature?: number;
+    } = {}
+  ): Promise<MuseSparkResponse> {
+    const requestBody: {
+      model: string;
+      input: MuseSparkMessage[];
+      reasoning?: { effort: string };
+      temperature?: number;
+    } = {
+      model: 'muse-spark-1.3',
+      input: messages.map((msg) => ({
+        type: 'message' as const,
+        role: msg.role,
+        content: msg.content,
+      })),
+    };
+
+    if (options.reasoningEffort) {
+      requestBody.reasoning = { effort: options.reasoningEffort };
+    }
+
+    if (options.temperature !== undefined) {
+      requestBody.temperature = options.temperature;
+    }
+
+    const response = await fetch(`${this.config.baseURL}/responses`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${this.config.apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(requestBody),
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({})) as {
+        error?: { message?: string };
+      };
+      throw new Error(
+        `Muse Spark API error (${response.status}): ${error.error?.message ?? response.statusText}`
+      );
+    }
+
+    const data = (await response.json()) as {
+      output: Array<{
+        type: string;
+        content?: Array<{ type: string; text: string }>;
+      }>;
+      usage?: {
+        input_tokens: number;
+        output_tokens: number;
+        output_tokens_details?: { reasoning_tokens: number };
+        total_tokens: number;
+      };
+    };
+
+    // Find reasoning and message outputs
+    const reasoningOutput = data.output.find((item) => item.type === 'reasoning');
+    const messageOutput = data.output.find((item) => item.type === 'message');
+
+    if (!messageOutput?.content) {
+      throw new Error('No message output in Muse Spark response');
+    }
+
+    const textContent = messageOutput.content.find(
+      (c) => c.type === 'output_text'
+    );
+    if (!textContent) {
+      throw new Error('No text content in Muse Spark message');
+    }
+
+    const result: MuseSparkResponse = {
+      content: textContent.text,
+    };
+
+    if (reasoningOutput) {
+      result.reasoning = 'Reasoning available (summary not included in response)';
+    }
+
+    if (data.usage) {
+      result.usage = {
+        inputTokens: data.usage.input_tokens,
+        outputTokens: data.usage.output_tokens,
+        reasoningTokens: data.usage.output_tokens_details?.reasoning_tokens ?? 0,
+        totalTokens: data.usage.total_tokens,
+      };
+    }
+
+    return result;
   }
 }

@@ -13,7 +13,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "pnpm -r test",
-    "smoke": "tsx packages/core/scripts/smoke-test.ts"
+    "smoke": "tsx packages/core/scripts/smoke-test.ts",
+    "inspect": "tsx packages/core/scripts/inspect.ts"
   },
   "devDependencies": {
     "@eslint/js": "^9.15.0",
