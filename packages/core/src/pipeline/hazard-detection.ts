@@ -94,27 +94,46 @@ export class HazardDetectionPipeline {
     // Step 1: Propose concepts (or use predefined from rule pack)
     const conceptsToDetect = rulePack.conceptsToDetect;
 
-    // Step 2: Run SAM for each concept in parallel (only with Meta provider)
-    let samResults: SAMSegmentationResult[] = [];
+    // Step 2: Get image dimensions
     let imageWidth = 0;
     let imageHeight = 0;
+
+    // Extract image buffer from data URL to get dimensions
+    try {
+      const base64Data = imageDataUrl.split(',')[1];
+      if (base64Data) {
+        const imageBuffer = Buffer.from(base64Data, 'base64');
+        const sharp = (await import('sharp')).default;
+        const metadata = await sharp(imageBuffer).metadata();
+        imageWidth = metadata.width ?? 0;
+        imageHeight = metadata.height ?? 0;
+      }
+    } catch (error) {
+      console.warn('Failed to get image dimensions:', error);
+    }
+
+    // Step 3: Run SAM for each concept in parallel (only with Meta provider)
+    let samResults: SAMSegmentationResult[] = [];
 
     if (provider === 'meta' && this.metaProvider) {
       samResults = await this.detectConcepts(imageDataUrl, conceptsToDetect);
 
-      if (samResults.length > 0) {
-        imageWidth = samResults[0]?.imageWidth ?? 0;
-        imageHeight = samResults[0]?.imageHeight ?? 0;
+      // Update dimensions from SAM if available
+      if (samResults.length > 0 && samResults[0]) {
+        imageWidth = samResults[0].imageWidth || imageWidth;
+        imageHeight = samResults[0].imageHeight || imageHeight;
       }
     }
 
-    // Step 3: Analyze findings with Muse Spark
+    // Step 4: Analyze findings with Muse Spark
     const findings = await this.analyzeFindingsWithSpark(
       imageDataUrl,
       samResults,
       rulePack,
       provider,
-      options.reasoningEffort ?? 'low'
+      options.reasoningEffort ?? 'low',
+      imageWidth,
+      imageHeight
     );
 
     return {
@@ -178,7 +197,9 @@ export class HazardDetectionPipeline {
     samResults: SAMSegmentationResult[],
     rulePack: SafetyRulePack,
     provider: 'meta' | 'baseten',
-    reasoningEffort: 'low' | 'medium' | 'high'
+    reasoningEffort: 'low' | 'medium' | 'high',
+    imageWidth: number,
+    imageHeight: number
   ): Promise<HazardFinding[]> {
     if (!this.metaProvider && !this.basetenProvider) {
       throw new Error('No provider configured');
@@ -242,7 +263,7 @@ Rules:
         },
       ]);
 
-      return this.parseFindings(response.content ?? '', samResults);
+      return this.parseFindings(response.content ?? '', samResults, imageWidth, imageHeight);
     } else if (provider === 'meta' && this.metaProvider) {
       const response = await this.metaProvider.generateCompletion(
         [
@@ -257,7 +278,7 @@ Rules:
         { reasoningEffort }
       );
 
-      return this.parseFindings(response.content, samResults);
+      return this.parseFindings(response.content, samResults, imageWidth, imageHeight);
     }
 
     throw new Error('No provider configured');
@@ -268,19 +289,53 @@ Rules:
    */
   private parseFindings(
     content: string,
-    samResults: SAMSegmentationResult[]
+    _samResults: SAMSegmentationResult[],
+    imageWidth: number,
+    imageHeight: number
   ): HazardFinding[] {
-    // Extract JSON from markdown or raw text
-    const jsonMatch =
-      content.match(/```(?:json)?\s*(\[[\s\S]*?\])\s*```/) ??
-      content.match(/(\[[\s\S]*?\])/);
+    // Extract JSON from markdown code blocks first
+    const codeBlockMatch = content.match(/```(?:json)?\s*(\[[\s\S]*\])\s*```/);
+    
+    let jsonText: string | undefined;
+    
+    if (codeBlockMatch?.[1]) {
+      jsonText = codeBlockMatch[1];
+    } else {
+      // Find outermost balanced array
+      const startIdx = content.indexOf('[');
+      if (startIdx === -1) {
+        console.warn('No JSON array found in response, returning empty findings');
+        return [];
+      }
+      
+      let depth = 0;
+      let endIdx = -1;
+      
+      for (let i = startIdx; i < content.length; i++) {
+        if (content[i] === '[') depth++;
+        if (content[i] === ']') {
+          depth--;
+          if (depth === 0) {
+            endIdx = i;
+            break;
+          }
+        }
+      }
+      
+      if (endIdx === -1) {
+        console.warn('No complete JSON array found in response, returning empty findings');
+        return [];
+      }
+      
+      jsonText = content.substring(startIdx, endIdx + 1);
+    }
 
-    if (!jsonMatch?.[1]) {
-      console.warn('No JSON array found in response, returning empty findings');
+    if (!jsonText) {
+      console.warn('No JSON text extracted, returning empty findings');
       return [];
     }
 
-    const parsed = JSON.parse(jsonMatch[1]) as unknown;
+    const parsed = JSON.parse(jsonText) as unknown;
 
     if (!Array.isArray(parsed)) {
       console.warn('Response is not an array, returning empty findings');
@@ -315,8 +370,8 @@ Rules:
                 y1: Number(box[1]),
                 x2: Number(box[2]),
                 y2: Number(box[3]),
-                width: samResults[0]?.imageWidth ?? 0,
-                height: samResults[0]?.imageHeight ?? 0,
+                width: imageWidth,
+                height: imageHeight,
               });
             }
           }

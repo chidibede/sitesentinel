@@ -142,9 +142,12 @@ async function main() {
 
     // Save results
     const outputDir = dirname(imagePath);
-    const baseName = basename(imagePath, '.jpg');
+    const baseName = basename(imagePath, '.jpg').replace(/\.(jpeg|png|gif)$/i, '');
 
-    const jsonPath = join(outputDir, `${baseName}-results.json`);
+    const jsonPath = join(
+      outputDir,
+      `${baseName}-${rulePackId}-${provider}-results.json`
+    );
     writeFileSync(jsonPath, JSON.stringify(result, null, 2));
     console.log(`💾 Results saved: ${jsonPath}`);
 
@@ -152,7 +155,10 @@ async function main() {
     if (result.findings.length > 0) {
       console.log('🎨 Rendering overlay...');
       const overlayBuffer = await renderOverlay(imageBuffer, result.findings);
-      const overlayPath = join(outputDir, `${baseName}-overlay.png`);
+      const overlayPath = join(
+        outputDir,
+        `${baseName}-${rulePackId}-${provider}-overlay.png`
+      );
       writeFileSync(overlayPath, overlayBuffer);
       console.log(`🖼️  Overlay saved: ${overlayPath}`);
     }

@@ -185,7 +185,7 @@ export class MetaModelAPIProvider {
     imageUrl: string,
     concept: string
   ): Promise<SAMSegmentationResult> {
-    const response = await fetch(`${this.config.baseURL}/v1/responses`, {
+    const response = await fetch(`${this.config.baseURL}/responses`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${this.config.apiKey}`,
@@ -208,11 +208,11 @@ export class MetaModelAPIProvider {
     });
 
     if (!response.ok) {
-      const error = (await response.json()) as {
+      const error = await response.json().catch(() => ({})) as {
         error?: { message?: string };
       };
       throw new Error(
-        `SAM API error: ${error.error?.message ?? response.statusText}`
+        `SAM API error (${response.status}): ${error.error?.message ?? response.statusText}`
       );
     }
 
@@ -280,7 +280,7 @@ export class MetaModelAPIProvider {
       requestBody.temperature = options.temperature;
     }
 
-    const response = await fetch(`${this.config.baseURL}/v1/responses`, {
+    const response = await fetch(`${this.config.baseURL}/responses`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${this.config.apiKey}`,
@@ -290,11 +290,11 @@ export class MetaModelAPIProvider {
     });
 
     if (!response.ok) {
-      const error = (await response.json()) as {
+      const error = await response.json().catch(() => ({})) as {
         error?: { message?: string };
       };
       throw new Error(
-        `Muse Spark API error: ${error.error?.message ?? response.statusText}`
+        `Muse Spark API error (${response.status}): ${error.error?.message ?? response.statusText}`
       );
     }
 
