@@ -16,21 +16,22 @@ Worker Devices (Meta Ray-Ban / Phone)
       API Gateway + Lambda
           ↓
     ┌─────────────────┐
-    │  Detection Loop │
-    │  - SAM 3.1      │  ← Segment people/PPE/hazards
-    │  - Muse Spark   │  ← Reason against safety manual
-    │  - Rule Engine  │  ← Company-specific policies
+    │ Agent Loop      │
+    │  1. Detect      │  ← SAM 3.1 segments hazards
+    │  2. Assess Risk │  ← 5x5 L×I matrix
+    │  3. Create Issue│  ← DynamoDB persistence
+    │  4. Assign Owner│  ← Site roster by role/zone
+    │  5. Notify      │  ← Voice alert + audit log
+    │  6. Verify Fix  │  ← After-image comparison
     └─────────────────┘
           ↓
     ┌─────────────────┐
-    │  Agent Actions  │
-    │  - Voice Alert  │  ← Muse Voice Transcribe
-    │  - Assign Fix   │
-    │  - Verify Photo │
-    │  - Close Issue  │
+    │  Muse Spark 1.3 │  ← Reason against rules
+    │  Risk Engine    │  ← Hierarchy of Controls
+    │  Voice Services │  ← Alert + Transcription
     └─────────────────┘
           ↓
-      Dashboard
+      Dashboard + DynamoDB
 ```
 
 **Models:**
@@ -46,27 +47,37 @@ sitesentinel/
 ├── packages/
 │   └── core/              # Shared logic and model clients
 │       ├── src/
+│       │   ├── agent/     # Agent loop workflow
+│       │   │   ├── agent-loop.ts      # Multi-step agentic workflow
+│       │   │   ├── issue-manager.ts   # Issue tracking & assignment
+│       │   │   └── voice-services.ts  # Alert generation + TTS
 │       │   ├── models/    # Provider abstractions
 │       │   │   ├── baseten.ts         # Muse Spark Open (Baseten)
-│       │   │   └── meta-model-api.ts  # SAM 3.1, Muse Spark, Voice
+│       │   │   ├── meta-model-api.ts  # SAM 3.1, Muse Spark, Voice
+│       │   │   └── risk-model.ts      # 5x5 risk matrix + controls
 │       │   ├── pipeline/  # Hazard detection pipeline
-│       │   │   ├── hazard-detection.ts  # Main pipeline orchestration
-│       │   │   └── overlay-renderer.ts  # Image annotation with Sharp
-│       │   └── safety-rules/
-│       │       └── rule-packs.ts      # OSHA 1926, Oil & Gas rules
+│       │   │   ├── hazard-detection-v2.ts  # Risk-aware pipeline
+│       │   │   └── overlay-renderer.ts     # Image annotation
+│       │   ├── safety-rules/
+│       │   │   └── rule-packs-v2.ts   # Risk engineering rules
+│       │   └── storage/
+│       │       └── dynamodb-store.ts  # Issue persistence
 │       ├── scripts/
-│       │   ├── smoke-test.ts          # Baseten smoke test
-│       │   └── inspect.ts             # CLI inspection tool
-│       └── test/
+│       │   ├── agent-loop.ts  # pnpm loop CLI
+│       │   ├── inspect.ts     # pnpm inspect CLI
+│       │   └── smoke-test.ts  # Smoke test
+│       └── test/          # 39 passing tests
 │           ├── fixtures/
-│           │   ├── api-responses/     # Real Meta API responses
-│           │   └── scenarios/         # Test images
-│           ├── baseten.test.ts
-│           └── sam-parser.test.ts     # SAM token parser tests
+│           │   ├── api-responses/
+│           │   └── scenarios/
+│           ├── agent-loop.test.ts
+│           ├── issue-manager.test.ts
+│           ├── risk-model.test.ts
+│           └── voice-services.test.ts
 ├── infra/                 # SST infrastructure
-│   ├── api.ts            # Lambda handler with POST /inspect
+│   ├── api.ts            # Lambda with 4 endpoints
 │   └── package.json
-├── sst.config.ts         # SST v3 configuration
+├── sst.config.ts         # SST v3 + DynamoDB
 └── package.json          # Workspace root
 ```
 
@@ -108,7 +119,37 @@ pnpm smoke
 
 # Run inspection (requires META_API_KEY or BASETEN_API_KEY)
 pnpm inspect <image-path> [rule-pack]
+
+# Run agent loop (requires META_API_KEY or BASETEN_API_KEY)
+pnpm loop <before.jpg> <after.jpg> [--pack construction] [--zone site-main]
 ```
+
+### Agent Loop CLI
+
+The `pnpm loop` command runs the complete agentic workflow end-to-end:
+
+```bash
+# Full agent loop: detect → assess → assign → verify
+export META_API_KEY="your-key"
+pnpm loop before-site.jpg after-site.jpg --pack construction --zone roof-access
+
+# Use Baseten fallback (Spark only, no SAM)
+export BASETEN_API_KEY="your-key"
+pnpm loop before.jpg after.jpg --provider baseten
+```
+
+**Agent Loop Steps:**
+1. **Detect**: SAM 3.1 segments hazards in "before" image
+2. **Assess Risk**: 5x5 Likelihood × Impact matrix, hierarchy of controls
+3. **Create Issue**: Persist to DynamoDB with full audit trail
+4. **Assign Owner**: Site roster matching by role/zone
+5. **Notify**: Generate voice alert text
+6. **Verify Fix**: Re-evaluate "after" image, close or reopen issue
+
+**Output:**
+- Console summary with resolved/unresolved counts
+- Detailed audit trail for each issue (timestamps, actions, actors)
+- Verification results with reasons
 
 ### Inspection CLI
 
@@ -195,23 +236,122 @@ sst secret set MetaApiKey <your-key>
 - [x] Baseten fallback for Muse Spark reasoning
 - [x] Test scenarios with openly licensed images
 
+### Day 3 ✅ (Nov 2, 2026)
+- [x] Risk engineering model (8 categories, 5x5 L×I matrix, risk bands)
+- [x] Hierarchy of Controls (Eliminate > Substitute > Engineering > Admin > PPE)
+- [x] Extended safety rule packs (11+ rules each: corrosion, leaks, fire, electrical, structural)
+- [x] Agent loop workflow with 6 explicit steps:
+  - Detect → Assess Risk → Create Issue → Assign → Notify → Verify Fix
+- [x] Issue management (DynamoDB + in-memory store, full audit trail)
+- [x] Site roster with role-based assignment by zone
+- [x] Voice alert generation per issue
+- [x] Fix verification: re-evaluates after-image with SAM+Spark, decides resolved/not resolved with reason
+- [x] API routes: POST /inspect, GET /issues, POST /issues/{id}/verify, POST /reports/voice
+- [x] CLI: `pnpm loop <before.jpg> <after.jpg>` runs complete loop end-to-end
+- [x] Muse Voice Transcribe integration hook (POST /v1/asr/transcribe)
+- [x] 39 unit tests passing (risk model, issue manager, voice, rule packs v2)
+- [x] All typecheck and lint checks pass
+
 ### Future
 - [ ] Meta Ray-Ban glasses integration
-- [ ] Muse Voice Transcribe for spoken alerts
-- [ ] Fix verification workflow
-- [ ] Dashboard for alert management
-- [ ] Company-specific safety manual upload
 - [ ] Real-time video processing
 - [ ] Multi-frame analysis and tracking
+- [ ] Company-specific safety manual upload
+- [ ] Dashboard for alert management
+
+## API Endpoints
+
+### POST /inspect
+Creates issues from image inspection.
+
+**Request:**
+```json
+{
+  "image": "data:image/jpeg;base64,...",
+  "rulePackId": "construction",
+  "zone": "roof-access",
+  "siteId": "demo-site",
+  "provider": "meta",
+  "returnOverlay": false
+}
+```
+
+**Response:**
+```json
+{
+  "issues": [
+    {
+      "id": "uuid",
+      "title": "Fall Protection Required",
+      "category": "Safety/PPE",
+      "riskBand": "high",
+      "riskScore": 12,
+      "assignedTo": "Safety Supervisor",
+      "status": "assigned",
+      "voiceAlert": "HIGH priority alert. Safety or PPE hazard detected in roof-access. Fall Protection Required. Assigned to Safety Supervisor. Action required immediately."
+    }
+  ],
+  "auditTrail": [...]
+}
+```
+
+### GET /issues?siteId=...&status=...&zone=...
+Lists all issues with optional filters.
+
+### POST /issues/{id}/verify
+Verifies fix with after-image.
+
+**Request:**
+```json
+{
+  "afterImage": "data:image/jpeg;base64,...",
+  "provider": "meta"
+}
+```
+
+**Response:**
+```json
+{
+  "issueId": "uuid",
+  "resolved": true,
+  "reason": "The Safety/PPE hazard \"Fall Protection Required\" is no longer detected...",
+  "auditTrail": [...]
+}
+```
+
+### POST /reports/voice
+Transcribes spoken worker report.
+
+**Request:**
+```json
+{
+  "audio": "base64-audio-data",
+  "siteId": "demo-site",
+  "zone": "warehouse"
+}
+```
 
 ## Built During the Hackathon
 
 **Event:** Meta Global AI Developer Hackathon  
 **Build Window:** October 27 – November 4, 2026  
 **Day 1:** October 27, 2026 - Foundation scaffold  
-**Day 2:** October 28, 2026 - Hazard detection pipeline
+**Day 2:** October 28, 2026 - Hazard detection pipeline  
+**Day 3:** November 2, 2026 - Agent loop + risk engineering
 
 All code in this repository was written during the hackathon build window. This is an open-source project built for demonstration and educational purposes.
+
+### Day 3 Highlights
+
+- **Risk Engineering Framework**: 8 categories, 5x5 likelihood×impact matrix, hierarchy of controls recommendations
+- **Extended Rule Packs**: 11+ risk engineering rules for construction and oil & gas (PPE, fire, electrical, structural, process/leak hazards)
+- **Agent Loop Workflow**: 6-step autonomous workflow with full audit trail: detect → assess → create → assign → notify → verify
+- **Issue Management**: DynamoDB persistence with in-memory fallback, site roster with role-based assignment
+- **Voice Services**: Alert text generation per issue + Muse Voice Transcribe hook for spoken worker reports
+- **Fix Verification**: Re-evaluates after-images with SAM+Spark, decides resolved/not resolved with reasoning
+- **API Routes**: 4 endpoints (inspect, list issues, verify, voice reports)
+- **CLI Agent Loop**: `pnpm loop` runs complete before/after workflow end-to-end
+- **39 Unit Tests Passing**: Full coverage of risk model, issue management, voice, and agent loop components
 
 ### Day 2 Highlights
 
