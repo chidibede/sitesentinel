@@ -78,7 +78,12 @@ app.post('/inspect', async (c) => {
     const roster = loadSiteRoster(siteId);
     const agent = new AgentLoop({ pipeline, issueStore, roster, siteId });
 
-    const imageUrl = `local://images/${Date.now()}.jpg`;
+    // Save image to disk and create URL
+    const imageFilename = `image-${Date.now()}.jpg`;
+    const imagePath = join(OUT_DIR, imageFilename);
+    writeFileSync(imagePath, imageBuffer);
+    const imageUrl = `http://localhost:3001/images/${imageFilename}`;
+
     const result = await agent.detectAndCreateIssues(imageBuffer, zone, imageUrl);
 
     let overlayUrl: string | undefined;
@@ -135,6 +140,8 @@ app.get('/issues', async (c) => {
         category: issue.category,
         riskBand: issue.riskAssessment.riskBand,
         riskScore: issue.riskAssessment.riskScore,
+        likelihood: issue.riskAssessment.likelihood,
+        impact: issue.riskAssessment.impact,
         zone: issue.zone,
         status: issue.status,
         assignedTo: issue.assignedTo,
@@ -196,7 +203,12 @@ app.post('/issues/:id/verify', async (c) => {
       siteId: issue.siteId,
     });
 
-    const afterImageUrl = `local://verifications/${Date.now()}.jpg`;
+    // Save after image to disk and create URL
+    const afterImageFilename = `verify-${Date.now()}.jpg`;
+    const afterImagePath = join(OUT_DIR, afterImageFilename);
+    writeFileSync(afterImagePath, afterImageBuffer);
+    const afterImageUrl = `http://localhost:3001/images/${afterImageFilename}`;
+
     const verification = await agent.verifyFix(
       issueId,
       afterImageBuffer,
@@ -281,6 +293,25 @@ app.get('/overlays/:filename', async (c) => {
   return new Response(file, {
     headers: {
       'Content-Type': 'image/png',
+    },
+  });
+});
+
+// Serve image files
+app.get('/images/:filename', async (c) => {
+  const filename = c.req.param('filename');
+  const filepath = join(OUT_DIR, filename);
+  
+  if (!existsSync(filepath)) {
+    return c.json({ error: 'File not found' }, 404);
+  }
+
+  const fs = await import('fs/promises');
+  const file = await fs.readFile(filepath);
+  
+  return new Response(file, {
+    headers: {
+      'Content-Type': 'image/jpeg',
     },
   });
 });

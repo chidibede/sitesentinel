@@ -5,12 +5,12 @@ import type { Issue } from '../types';
 const GlassesView = () => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [captureInterval, setCaptureInterval] = useState<number | null>(null);
   const [isCapturing, setIsCapturing] = useState(false);
   const [currentIssues, setCurrentIssues] = useState<Issue[]>([]);
-  const [overlayUrl, setOverlayUrl] = useState<string | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [verifyMode, setVerifyMode] = useState<string | null>(null);
   const [status, setStatus] = useState<string>('Ready');
@@ -83,11 +83,11 @@ const GlassesView = () => {
         rulePackId: 'construction',
         zone: 'site-main',
         siteId: 'demo-site',
-        returnOverlay: true,
+        returnOverlay: false,
       });
 
       setCurrentIssues(response.issues);
-      setOverlayUrl(response.overlayUrl ?? null);
+      drawOverlays(response.issues);
 
       if (response.issues.length > 0) {
         const topIssue = response.issues[0] ?? null;
@@ -104,6 +104,82 @@ const GlassesView = () => {
       setStatus('Inspection failed');
     }
   }, [captureFrame]);
+
+  // Draw overlays on canvas
+  const drawOverlays = useCallback((issues: Issue[]) => {
+    const canvas = overlayCanvasRef.current;
+    const video = videoRef.current;
+    
+    if (!canvas || !video) return;
+    
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    
+    const frameArea = canvas.width * canvas.height;
+    const usedPositions: Array<{ x: number; y: number; width: number; height: number }> = [];
+    
+    issues.forEach((issue) => {
+      const riskColor = issue.riskBand === 'critical' || issue.riskBand === 'high'
+        ? '#ef4444'
+        : issue.riskBand === 'medium'
+        ? '#f59e0b'
+        : '#10b981';
+      
+      issue.evidenceBoxes.forEach((box) => {
+        const boxArea = box.width * box.height;
+        const coveragePercent = (boxArea / frameArea) * 100;
+        
+        // Drop boxes covering >80% of frame
+        if (coveragePercent > 80) return;
+        
+        // Draw box
+        ctx.strokeStyle = riskColor;
+        ctx.lineWidth = 3;
+        ctx.strokeRect(box.x, box.y, box.width, box.height);
+        
+        // Draw label - one per box
+        const label = issue.title;
+        const labelPadding = 6;
+        const fontSize = 16;
+        ctx.font = `bold ${fontSize}px sans-serif`;
+        const textMetrics = ctx.measureText(label);
+        const textWidth = textMetrics.width + labelPadding * 2;
+        const textHeight = fontSize + labelPadding * 2;
+        
+        // Calculate label position - above box or offset if collision
+        const labelX = box.x;
+        let labelY = box.y - textHeight - 4;
+        
+        // Check for collision with previous labels
+        const hasCollision = usedPositions.some(pos => 
+          labelX < pos.x + pos.width &&
+          labelX + textWidth > pos.x &&
+          labelY < pos.y + pos.height &&
+          labelY + textHeight > pos.y
+        );
+        
+        if (hasCollision || labelY < 0) {
+          // Offset label inside box at top
+          labelY = box.y + 4;
+        }
+        
+        // Draw label background
+        ctx.fillStyle = riskColor;
+        ctx.fillRect(labelX, labelY, textWidth, textHeight);
+        
+        // Draw label text
+        ctx.fillStyle = 'white';
+        ctx.fillText(label, labelX + labelPadding, labelY + fontSize + labelPadding / 2);
+        
+        // Track used position
+        usedPositions.push({ x: labelX, y: labelY, width: textWidth, height: textHeight });
+      });
+    });
+  }, []);
 
   // Speak alert using browser TTS
   const speakAlert = (text: string) => {
@@ -241,14 +317,11 @@ const GlassesView = () => {
       {/* Hidden canvas for capture */}
       <canvas ref={canvasRef} className="hidden" />
 
-      {/* Overlay image */}
-      {overlayUrl && (
-        <img
-          src={overlayUrl}
-          alt="Detection overlay"
-          className="absolute inset-0 w-full h-full object-cover pointer-events-none opacity-90"
-        />
-      )}
+      {/* Overlay canvas for detection boxes */}
+      <canvas 
+        ref={overlayCanvasRef}
+        className="absolute inset-0 w-full h-full object-cover pointer-events-none"
+      />
 
       {/* HUD Overlay */}
       <div className="absolute inset-0 pointer-events-none">

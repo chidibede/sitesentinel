@@ -75,11 +75,15 @@ const Dashboard = () => {
       : 0;
 
   // 5x5 Heatmap data (Likelihood × Impact)
-  const heatmapData = Array.from({ length: 5 }, (_, likelihood) =>
-    Array.from({ length: 5 }, (_, impact) => {
-      const score = (likelihood + 1) * (impact + 1);
-      const count = issues.filter((i) => i.riskScore === score).length;
-      return { likelihood: likelihood + 1, impact: impact + 1, count, score };
+  const heatmapData = Array.from({ length: 5 }, (_, likelihoodIdx) =>
+    Array.from({ length: 5 }, (_, impactIdx) => {
+      const likelihood = likelihoodIdx + 1;
+      const impact = impactIdx + 1;
+      const count = issues.filter(
+        (i) => i.likelihood === likelihood && i.impact === impact
+      ).length;
+      const score = likelihood * impact;
+      return { likelihood, impact, count, score };
     })
   );
 
@@ -313,7 +317,7 @@ const Dashboard = () => {
           }}
         >
           <div
-            className="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-screen overflow-y-auto"
+            className="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-[90vh] overflow-y-auto"
             onClick={(e) => {
               e.stopPropagation();
             }}

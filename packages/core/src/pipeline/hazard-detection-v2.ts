@@ -119,7 +119,13 @@ export class HazardDetectionPipeline {
       ];
 
       // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
-      const response = await (this.config.sparkProvider as MetaModelAPIProvider).generateCompletion(metaMessages);
+      const response = await (this.config.sparkProvider as MetaModelAPIProvider).generateCompletion(
+        metaMessages,
+        {
+          temperature: 0.3,
+          reasoningEffort: 'low',
+        }
+      );
       completion = response.content;
     } else {
       // Baseten - use text and image_url types
@@ -134,7 +140,10 @@ export class HazardDetectionPipeline {
       ];
 
       // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
-      const response = await (this.config.sparkProvider as BasetenProvider).generateCompletion(basetenMessages);
+      const response = await (this.config.sparkProvider as BasetenProvider).generateCompletion(
+        basetenMessages,
+        { temperature: 0.3 }
+      );
       completion = response.content ?? '';
     }
 

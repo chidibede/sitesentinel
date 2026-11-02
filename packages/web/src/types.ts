@@ -33,6 +33,8 @@ export interface Issue {
   category: RiskCategory;
   riskBand: RiskBand;
   riskScore: number;
+  likelihood: 1 | 2 | 3 | 4 | 5;
+  impact: 1 | 2 | 3 | 4 | 5;
   zone: string;
   status: IssueStatus;
   assignedTo?: string;

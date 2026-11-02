@@ -226,6 +226,8 @@ async function handleListIssues(event: RequestEvent) {
           category: issue.category,
           riskBand: issue.riskAssessment.riskBand,
           riskScore: issue.riskAssessment.riskScore,
+          likelihood: issue.riskAssessment.likelihood,
+          impact: issue.riskAssessment.impact,
           zone: issue.zone,
           status: issue.status,
           assignedTo: issue.assignedTo,
