@@ -301,13 +301,16 @@ export class AgentLoop {
       beforeImagePath
     );
 
-    // Verification phase
+    // Run detection ONCE on after image
+    const afterFindings = await this.config.pipeline.detect(afterImageBuffer);
+
+    // Verification phase - match all issues against the single detection result
     const verificationResults: VerificationResult[] = [];
 
     for (const issue of detectionResult.issues) {
-      const verification = await this.verifyFix(
+      const verification = await this.verifyFixWithFindings(
         issue.id,
-        afterImageBuffer,
+        afterFindings,
         afterImagePath
       );
       verificationResults.push(verification);
@@ -334,5 +337,93 @@ export class AgentLoop {
     ].join('\n');
 
     return { detectionResult, verificationResults, summary };
+  }
+
+  /**
+   * Step 6: Verify fix with pre-computed findings
+   */
+  private async verifyFixWithFindings(
+    issueId: string,
+    afterFindings: HazardFinding[],
+    afterImagePath: string
+  ): Promise<VerificationResult> {
+    const auditTrail: AuditEntry[] = [];
+
+    auditTrail.push({
+      timestamp: new Date().toISOString(),
+      action: 'verify_start',
+      actor: 'system',
+      details: { issueId, afterImagePath },
+    });
+
+    // Get original issue
+    const issue = await this.config.issueStore.get(issueId);
+    if (!issue) {
+      throw new Error(`Issue ${issueId} not found`);
+    }
+
+    // Check if the specific hazard still exists
+    const stillPresent = afterFindings.some(
+      (f) => f.rule.id === issue.ruleId
+    );
+
+    const resolved = !stillPresent;
+    let reason = '';
+
+    if (resolved) {
+      reason = `The ${issue.category} hazard "${issue.title}" is no longer detected in the verification image. The recommended control measures appear to have been implemented successfully.`;
+    } else {
+      const matchedFinding = afterFindings.find(
+        (f) => f.rule.id === issue.ruleId
+      );
+      reason = `The ${issue.category} hazard "${issue.title}" is still present. Evidence: ${matchedFinding?.evidence ?? 'Detected'}. Further corrective action is required.`;
+    }
+
+    auditTrail.push({
+      timestamp: new Date().toISOString(),
+      action: 'verify_complete',
+      actor: 'system',
+      details: {
+        issueId,
+        resolved,
+        stillPresent,
+        afterFindingsCount: afterFindings.length,
+      },
+    });
+
+    // Update issue status
+    const updates: Partial<Issue> = {
+      verificationImages: [...(issue.verificationImages ?? []), afterImagePath],
+      verificationNotes: reason,
+      status: resolved ? 'resolved' : 'reopened',
+      updatedAt: new Date().toISOString(),
+    };
+
+    if (resolved) {
+      updates.resolvedAt = new Date().toISOString();
+
+      auditTrail.push({
+        timestamp: new Date().toISOString(),
+        action: 'close_issue',
+        actor: 'system',
+        details: { issueId, reason },
+      });
+    } else {
+      auditTrail.push({
+        timestamp: new Date().toISOString(),
+        action: 'reopen_issue',
+        actor: 'system',
+        details: { issueId, reason },
+      });
+    }
+
+    await this.config.issueStore.update(issueId, updates);
+
+    // Add audit entries
+    for (const entry of auditTrail) {
+      await this.config.issueStore.addAuditEntry(issueId, entry);
+    }
+
+    return { issueId, resolved, reason, auditTrail };
   }
 }

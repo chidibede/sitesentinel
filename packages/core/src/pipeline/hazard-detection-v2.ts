@@ -8,6 +8,7 @@ import type {
   MetaModelAPIProvider,
   SAMSegmentationResult,
   BoundingBox,
+  MuseSparkMessage,
 } from '../models/meta-model-api.js';
 import type { BasetenProvider } from '../models/baseten.js';
 import type { Message } from '../models/types.js';
@@ -100,29 +101,42 @@ export class HazardDetectionPipeline {
     imageWidth: number,
     imageHeight: number
   ): Promise<HazardFinding[]> {
-    const evidence = samResults
-      .filter((r) => r.detections.length > 0)
-      .map(
-        (r) =>
-          `- ${r.concept}: ${r.detections.length} detection${r.detections.length !== 1 ? 's' : ''}`
-      );
+    const prompt = this.buildSparkPrompt(rulePack, samResults);
 
-    const evidenceText = evidence.length > 0 ? evidence.join('\n') : 'No objects detected.';
+    let completion: string;
 
-    const prompt = this.buildSparkPrompt(rulePack, evidenceText);
+    // Check if provider is MetaModelAPIProvider (has generateCompletion with Meta format)
+    if ('segmentImage' in this.config.sparkProvider) {
+      // Meta Model API - use input_text and input_image types
+      const metaMessages: MuseSparkMessage[] = [
+        {
+          role: 'user',
+          content: [
+            { type: 'input_text', text: prompt },
+            { type: 'input_image', image_url: imageDataUrl },
+          ],
+        },
+      ];
 
-    const messages: Message[] = [
-      {
-        role: 'user',
-        content: [
-          { type: 'text', text: prompt },
-          { type: 'image_url', image_url: { url: imageDataUrl } },
-        ],
-      },
-    ];
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
+      const response = await (this.config.sparkProvider as MetaModelAPIProvider).generateCompletion(metaMessages);
+      completion = response.content;
+    } else {
+      // Baseten - use text and image_url types
+      const basetenMessages: Message[] = [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: prompt },
+            { type: 'image_url', image_url: { url: imageDataUrl } },
+          ],
+        },
+      ];
 
-    const response = await (this.config.sparkProvider as BasetenProvider).generateCompletion(messages);
-    const completion = response.content ?? '';
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
+      const response = await (this.config.sparkProvider as BasetenProvider).generateCompletion(basetenMessages);
+      completion = response.content ?? '';
+    }
 
     return this.parseFindings(completion, rulePack, samResults, imageWidth, imageHeight);
   }
@@ -130,7 +144,17 @@ export class HazardDetectionPipeline {
   /**
    * Build Spark prompt
    */
-  private buildSparkPrompt(rulePack: SafetyRulePack, evidenceText: string): string {
+  private buildSparkPrompt(rulePack: SafetyRulePack, samResults: SAMSegmentationResult[]): string {
+    const evidenceText = samResults
+      .filter((r) => r.detections.length > 0)
+      .map((r) => {
+        const boxes = r.detections
+          .map((d) => `[${d.box.x1},${d.box.y1},${d.box.x2},${d.box.y2}]`)
+          .join(', ');
+        return `- ${r.concept}: ${r.detections.length} detected (boxes: ${boxes})`;
+      })
+      .join('\n');
+
     const rulesText = rulePack.rules
       .map(
         (rule) =>
@@ -144,7 +168,7 @@ Industry: ${rulePack.industry}
 Rule Pack: ${rulePack.name}
 
 Detected Objects:
-${evidenceText}
+${evidenceText || 'No objects detected.'}
 
 Safety Rules:
 ${rulesText}

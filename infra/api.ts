@@ -19,6 +19,8 @@ interface RequestEvent {
   requestContext: { http: { method: string; path: string } };
   body?: string;
   pathParameters?: Record<string, string>;
+  rawQueryString?: string;
+  queryStringParameters?: Record<string, string>;
 }
 
 export async function handler(event: RequestEvent) {
@@ -176,14 +178,12 @@ async function handleListIssues(event: RequestEvent) {
     const issuesTableName = getResourceValue('IssuesTable');
     const issueStore = new DynamoDBIssueStore(issuesTableName);
 
-    const url = new URL(
-      event.requestContext.http.path,
-      'https://api.sitesentinel.com'
-    );
-    const siteId = url.searchParams.get('siteId') ?? undefined;
-    const statusParam = url.searchParams.get('status');
-    const status = statusParam as 'open' | 'assigned' | 'in-progress' | 'pending-verification' | 'resolved' | 'reopened' | 'closed' | null;
-    const zone = url.searchParams.get('zone') ?? undefined;
+    // Parse query parameters from Lambda event
+    const params = event.queryStringParameters ?? {};
+    const siteId = params.siteId ?? undefined;
+    const statusParam = params.status;
+    const status = (statusParam as 'open' | 'assigned' | 'in-progress' | 'pending-verification' | 'resolved' | 'reopened' | 'closed' | undefined) ?? undefined;
+    const zone = params.zone ?? undefined;
 
     const issues = await issueStore.list({ siteId, status, zone });
 

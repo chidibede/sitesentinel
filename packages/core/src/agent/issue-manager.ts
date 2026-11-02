@@ -244,9 +244,11 @@ export class FileIssueStore implements IssueStore {
       results = results.filter((i) => i.zone === filters.zone);
     }
 
-    return results.sort(
-      (a, b) =>
-        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    return Promise.resolve(
+      results.sort(
+        (a, b) =>
+          new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      )
     );
   }
 
