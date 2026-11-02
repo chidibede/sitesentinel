@@ -25,11 +25,11 @@ class ApiClient {
     });
 
     if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error || 'Inspection failed');
+      const error = await response.json() as { error?: string };
+      throw new Error(error.error ?? 'Inspection failed');
     }
 
-    return response.json();
+    return response.json() as Promise<InspectResponse>;
   }
 
   async listIssues(filters?: {
@@ -46,11 +46,11 @@ class ApiClient {
     const response = await fetch(url);
 
     if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error || 'Failed to fetch issues');
+      const error = await response.json() as { error?: string };
+      throw new Error(error.error ?? 'Failed to fetch issues');
     }
 
-    return response.json();
+    return response.json() as Promise<{ issues: Issue[]; count: number }>;
   }
 
   async verifyFix(issueId: string, request: VerifyRequest): Promise<VerifyResponse> {
@@ -61,11 +61,11 @@ class ApiClient {
     });
 
     if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error || 'Verification failed');
+      const error = await response.json() as { error?: string };
+      throw new Error(error.error ?? 'Verification failed');
     }
 
-    return response.json();
+    return response.json() as Promise<VerifyResponse>;
   }
 
   async transcribeVoice(request: VoiceReportRequest): Promise<VoiceReportResponse> {
@@ -76,11 +76,11 @@ class ApiClient {
     });
 
     if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error || 'Transcription failed');
+      const error = await response.json() as { error?: string };
+      throw new Error(error.error ?? 'Transcription failed');
     }
 
-    return response.json();
+    return response.json() as Promise<VoiceReportResponse>;
   }
 }
 

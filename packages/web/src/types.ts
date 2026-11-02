@@ -5,7 +5,9 @@ export interface BoundingBox {
   height: number;
 }
 
-export type RiskBand = 'low' | 'medium' | 'high' | 'very-high';
+// Import core types for consistency
+export type RiskBand = 'low' | 'medium' | 'high' | 'critical';
+
 export type RiskCategory = 
   | 'Safety/PPE'
   | 'Fire'

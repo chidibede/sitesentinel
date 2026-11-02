@@ -15,6 +15,7 @@ node_modules
 dist
 .turbo
 out
+dev-api-out
 
 # OS
 .DS_Store

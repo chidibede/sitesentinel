@@ -43,6 +43,10 @@ export default tseslint.config(
       '**/.sst/**',
       '**/dist/**',
       'eslint.config.js',
+      '**/postcss.config.js',
+      '**/tailwind.config.js',
+      '**/vite.config.ts',
+      'packages/dev-api/**',
     ],
   }
 );

@@ -7,19 +7,22 @@ const Dashboard = () => {
   const [selectedIssue, setSelectedIssue] = useState<Issue | null>(null);
   const [statusFilter, setStatusFilter] = useState<IssueStatus | 'all'>('all');
   const [loading, setLoading] = useState(true);
+  const [apiError, setApiError] = useState<string | null>(null);
 
   useEffect(() => {
-    loadIssues();
+    void loadIssues();
   }, [statusFilter]);
 
   const loadIssues = async () => {
     try {
       setLoading(true);
+      setApiError(null);
       const filters = statusFilter !== 'all' ? { status: statusFilter } : {};
       const response = await apiClient.listIssues(filters);
       setIssues(response.issues);
     } catch (error) {
       console.error('Failed to load issues:', error);
+      setApiError(error instanceof Error ? error.message : 'API unreachable');
     } finally {
       setLoading(false);
     }
@@ -27,7 +30,7 @@ const Dashboard = () => {
 
   const getRiskColor = (band: RiskBand) => {
     switch (band) {
-      case 'very-high':
+      case 'critical':
         return 'bg-red-600 text-white';
       case 'high':
         return 'bg-orange-500 text-white';
@@ -57,7 +60,7 @@ const Dashboard = () => {
 
   // Calculate risk score distribution
   const riskDistribution = {
-    'very-high': issues.filter((i) => i.riskBand === 'very-high').length,
+    critical: issues.filter((i) => i.riskBand === 'critical').length,
     high: issues.filter((i) => i.riskBand === 'high').length,
     medium: issues.filter((i) => i.riskBand === 'medium').length,
     low: issues.filter((i) => i.riskBand === 'low').length,
@@ -85,6 +88,17 @@ const Dashboard = () => {
       <h1 className="text-3xl font-bold text-gray-900 mb-8">Safety Dashboard</h1>
 
       {/* Summary Cards */}
+      {apiError && (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-8">
+          <div className="flex items-center">
+            <svg className="w-5 h-5 text-red-500 mr-2" fill="currentColor" viewBox="0 0 20 20">
+              <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+            </svg>
+            <span className="text-red-800 font-medium">API Unreachable: {apiError}</span>
+          </div>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
         <div className="bg-white rounded-lg shadow p-6">
           <div className="text-sm font-medium text-gray-500">Total Issues</div>
@@ -114,14 +128,14 @@ const Dashboard = () => {
         <div className="flex space-x-4">
           <div className="flex-1">
             <div className="flex justify-between items-center mb-2">
-              <span className="text-sm font-medium text-gray-700">Very High</span>
-              <span className="text-sm font-bold text-red-600">{riskDistribution['very-high']}</span>
+              <span className="text-sm font-medium text-gray-700">Critical</span>
+              <span className="text-sm font-bold text-red-600">{riskDistribution.critical}</span>
             </div>
             <div className="w-full bg-gray-200 rounded-full h-4">
               <div
                 className="bg-red-600 h-4 rounded-full"
                 style={{
-                  width: `${issues.length > 0 ? (riskDistribution['very-high'] / issues.length) * 100 : 0}%`,
+                  width: `${issues.length > 0 ? (riskDistribution.critical / issues.length) * 100 : 0}%`,
                 }}
               />
             </div>
@@ -224,7 +238,9 @@ const Dashboard = () => {
           <h2 className="text-xl font-semibold text-gray-900">Issues</h2>
           <select
             value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value as IssueStatus | 'all')}
+            onChange={(e) => {
+              setStatusFilter(e.target.value as IssueStatus | 'all');
+            }}
             className="border border-gray-300 rounded-md px-3 py-2 text-sm"
           >
             <option value="all">All Statuses</option>
@@ -238,6 +254,10 @@ const Dashboard = () => {
 
         {loading ? (
           <div className="text-center py-8 text-gray-500">Loading...</div>
+        ) : apiError ? (
+          <div className="text-center py-8 text-red-600">
+            Unable to load issues. Please check API connection.
+          </div>
         ) : issues.length === 0 ? (
           <div className="text-center py-8 text-gray-500">No issues found</div>
         ) : (
@@ -246,7 +266,9 @@ const Dashboard = () => {
               <div
                 key={issue.id}
                 className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 cursor-pointer"
-                onClick={() => setSelectedIssue(issue)}
+                onClick={() => {
+                  setSelectedIssue(issue);
+                }}
               >
                 <div className="flex justify-between items-start">
                   <div className="flex-1">
@@ -286,17 +308,23 @@ const Dashboard = () => {
       {selectedIssue && (
         <div
           className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50"
-          onClick={() => setSelectedIssue(null)}
+          onClick={() => {
+            setSelectedIssue(null);
+          }}
         >
           <div
             className="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-screen overflow-y-auto"
-            onClick={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+            }}
           >
             <div className="p-6">
               <div className="flex justify-between items-start mb-4">
                 <h2 className="text-2xl font-bold text-gray-900">{selectedIssue.title}</h2>
                 <button
-                  onClick={() => setSelectedIssue(null)}
+                  onClick={() => {
+                    setSelectedIssue(null);
+                  }}
                   className="text-gray-400 hover:text-gray-600"
                 >
                   <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">

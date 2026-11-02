@@ -37,7 +37,9 @@ const GlassesView = () => {
 
     return () => {
       if (stream) {
-        stream.getTracks().forEach((track) => track.stop());
+        stream.getTracks().forEach((track) => {
+          track.stop();
+        });
       }
     };
   }, []);
@@ -60,7 +62,9 @@ const GlassesView = () => {
       canvas.toBlob((blob) => {
         if (blob) {
           const reader = new FileReader();
-          reader.onloadend = () => resolve(reader.result as string);
+          reader.onloadend = () => {
+            resolve(reader.result as string);
+          };
           reader.readAsDataURL(blob);
         }
       }, 'image/jpeg', 0.8);
@@ -86,9 +90,10 @@ const GlassesView = () => {
       setOverlayUrl(response.overlayUrl ?? null);
 
       if (response.issues.length > 0) {
-        const topIssue = response.issues[0];
+        const topIssue = response.issues[0] ?? null;
+        setStatus(`${response.issues.length} hazard(s) detected`);
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
         if (topIssue) {
-          setStatus(`${response.issues.length} hazard(s) detected`);
           speakAlert(topIssue.voiceAlert ?? `${topIssue.riskBand} risk: ${topIssue.title}`);
         }
       } else {
@@ -145,28 +150,32 @@ const GlassesView = () => {
         chunks.push(event.data);
       };
 
-      mediaRecorder.onstop = async () => {
+      mediaRecorder.onstop = () => {
         const blob = new Blob(chunks, { type: 'audio/webm' });
         const reader = new FileReader();
-        reader.onloadend = async () => {
-          const base64Audio = (reader.result as string).split(',')[1];
-          if (base64Audio) {
-            try {
-              setStatus('Transcribing...');
-              const response = await apiClient.transcribeVoice({
-                audio: base64Audio,
-                siteId: 'demo-site',
-                zone: 'site-main',
-              });
-              setStatus(`Transcribed: ${response.transcription}`);
-            } catch (error) {
-              console.error('Transcription failed:', error);
-              setStatus('Transcription failed');
+        reader.onloadend = () => {
+          void (async () => {
+            const base64Audio = (reader.result as string).split(',')[1];
+            if (base64Audio) {
+              try {
+                setStatus('Transcribing...');
+                const response = await apiClient.transcribeVoice({
+                  audio: base64Audio,
+                  siteId: 'demo-site',
+                  zone: 'site-main',
+                });
+                setStatus(`Transcribed: ${response.transcription}`);
+              } catch (error) {
+                console.error('Transcription failed:', error);
+                setStatus('Transcription failed');
+              }
             }
-          }
+          })();
         };
         reader.readAsDataURL(blob);
-        audioStream.getTracks().forEach((track) => track.stop());
+        audioStream.getTracks().forEach((track) => {
+          track.stop();
+        });
       };
 
       mediaRecorder.start();
@@ -271,13 +280,15 @@ const GlassesView = () => {
               <div
                 key={issue.id}
                 className={`bg-black bg-opacity-70 text-white p-3 rounded-lg text-sm border-l-4 ${
-                  issue.riskBand === 'very-high' || issue.riskBand === 'high'
+                  issue.riskBand === 'critical' || issue.riskBand === 'high'
                     ? 'border-red-500'
                     : issue.riskBand === 'medium'
                     ? 'border-yellow-500'
                     : 'border-green-500'
                 } pointer-events-auto cursor-pointer hover:bg-opacity-80`}
-                onClick={() => startVerifyMode(issue.id)}
+                onClick={() => {
+                  startVerifyMode(issue.id);
+                }}
               >
                 <div className="font-bold uppercase text-xs mb-1">{issue.riskBand} RISK</div>
                 <div className="font-semibold">{issue.title}</div>
@@ -300,13 +311,17 @@ const GlassesView = () => {
         {verifyMode ? (
           <>
             <button
-              onClick={() => setVerifyMode(null)}
+              onClick={() => {
+                setVerifyMode(null);
+              }}
               className="bg-gray-700 hover:bg-gray-600 text-white px-6 py-3 rounded-full font-semibold shadow-lg"
             >
               Cancel Verify
             </button>
             <button
-              onClick={() => void captureVerification()}
+              onClick={() => {
+                void captureVerification();
+              }}
               className="bg-green-600 hover:bg-green-500 text-white px-8 py-3 rounded-full font-semibold shadow-lg"
             >
               Capture Verification
@@ -331,9 +346,13 @@ const GlassesView = () => {
             </button>
 
             <button
-              onMouseDown={() => void startVoiceReport()}
+              onMouseDown={() => {
+                void startVoiceReport();
+              }}
               onMouseUp={stopVoiceReport}
-              onTouchStart={() => void startVoiceReport()}
+              onTouchStart={() => {
+                void startVoiceReport();
+              }}
               onTouchEnd={stopVoiceReport}
               className={`${
                 isRecording ? 'bg-red-600' : 'bg-purple-600 hover:bg-purple-500'
