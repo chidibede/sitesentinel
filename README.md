@@ -8,76 +8,143 @@ Built during the [Meta Global AI Developer Hackathon](https://ai.meta.com/events
 
 ## Architecture
 
-```
-Worker Devices (Meta Ray-Ban / Phone)
-          ↓
-   [Video Stream via Meta Wearables Device Access Toolkit]
-          ↓
-      API Gateway + Lambda
-          ↓
-    ┌─────────────────┐
-    │ Agent Loop      │
-    │  1. Detect      │  ← SAM 3.1 segments hazards
-    │  2. Assess Risk │  ← 5x5 L×I matrix
-    │  3. Create Issue│  ← DynamoDB persistence
-    │  4. Assign Owner│  ← Site roster by role/zone
-    │  5. Notify      │  ← Voice alert + audit log
-    │  6. Verify Fix  │  ← After-image comparison
-    └─────────────────┘
-          ↓
-    ┌─────────────────┐
-    │  Muse Spark 1.3 │  ← Reason against rules
-    │  Risk Engine    │  ← Hierarchy of Controls
-    │  Voice Services │  ← Alert + Transcription
-    └─────────────────┘
-          ↓
-      Dashboard + DynamoDB
+```mermaid
+graph TB
+    subgraph "Worker Devices"
+        A[Meta Ray-Ban Glasses]
+        B[Mobile Phone Camera]
+    end
+    
+    subgraph "Meta Wearables"
+        C[Device Access Toolkit]
+        D[Mock Device Kit]
+    end
+    
+    subgraph "Frontend"
+        E[Web App - Glasses View HUD]
+        F[Web App - Dashboard]
+    end
+    
+    subgraph "AWS Lambda API"
+        G[POST /inspect]
+        H[GET /issues]
+        I[POST /issues/:id/verify]
+        J[POST /reports/voice]
+    end
+    
+    subgraph "Agent Loop"
+        K1[1. Detect SAM 3.1]
+        K2[2. Assess Risk 5x5 L×I]
+        K3[3. Create Issue]
+        K4[4. Assign Owner]
+        K5[5. Notify Voice]
+        K6[6. Verify Fix]
+        K1 --> K2 --> K3 --> K4 --> K5 --> K6
+    end
+    
+    subgraph "Meta AI Models"
+        L[SAM 3.1 Segmentation]
+        M[Muse Spark 1.3 Reasoning]
+        N[Muse Voice Transcribe]
+    end
+    
+    subgraph "Storage"
+        O[DynamoDB Issues]
+        P[S3 Images/Overlays]
+    end
+    
+    A --> C --> G
+    B --> E --> G
+    D --> G
+    
+    G --> K1
+    K1 --> L
+    K1 --> M
+    K2 --> M
+    K3 --> O
+    K5 --> N
+    K6 --> L
+    K6 --> M
+    
+    G --> P
+    I --> P
+    
+    H --> F
+    E --> I
+    E --> J
+    J --> N
+    
+    style K1 fill:#e3f2fd
+    style K2 fill:#e3f2fd
+    style K3 fill:#e3f2fd
+    style K4 fill:#e3f2fd
+    style K5 fill:#e3f2fd
+    style K6 fill:#e3f2fd
+    style L fill:#fff3e0
+    style M fill:#fff3e0
+    style N fill:#fff3e0
 ```
 
-**Models:**
+**Meta AI Tools Used:**
 - **SAM 3.1** (Segment Anything Model): Detects and segments people, PPE, and hazards
-- **Muse Spark** (Meta Model API): Agentic reasoning against safety manuals
-- **Muse Voice Transcribe**: Spoken safety reports and alerts
-- **Muse Spark Open** (Baseten): Offline/open-weights path for on-premise deployments
+- **Muse Spark 1.3** (Meta Model API): Agentic reasoning against safety manuals
+- **Muse Voice Transcribe 1.0**: Spoken safety reports and alerts
+- **Muse Spark Open** (via Baseten): Offline/open-weights path for on-premise deployments
+- **Meta Wearables Device Access Toolkit**: Ray-Ban glasses camera stream integration
 
 ## Project Structure
 
 ```
 sitesentinel/
 ├── packages/
-│   └── core/              # Shared logic and model clients
+│   ├── core/              # Shared logic and model clients
+│   │   ├── src/
+│   │   │   ├── agent/     # Agent loop workflow
+│   │   │   │   ├── agent-loop.ts      # Multi-step agentic workflow
+│   │   │   │   ├── issue-manager.ts   # Issue tracking & assignment
+│   │   │   │   └── voice-services.ts  # Alert generation + TTS
+│   │   │   ├── models/    # Provider abstractions
+│   │   │   │   ├── baseten.ts         # Muse Spark Open (Baseten)
+│   │   │   │   ├── meta-model-api.ts  # SAM 3.1, Muse Spark, Voice
+│   │   │   │   └── risk-model.ts      # 5x5 risk matrix + controls
+│   │   │   ├── pipeline/  # Hazard detection pipeline
+│   │   │   │   ├── hazard-detection-v2.ts  # Risk-aware pipeline
+│   │   │   │   └── overlay-renderer.ts     # Image annotation
+│   │   │   ├── safety-rules/
+│   │   │   │   └── rule-packs-v2.ts   # Risk engineering rules
+│   │   │   └── storage/
+│   │   │       ├── dynamodb-store.ts  # Issue persistence
+│   │   │       └── s3-storage.ts      # Image/overlay storage
+│   │   ├── scripts/
+│   │   │   ├── agent-loop.ts  # pnpm loop CLI
+│   │   │   ├── inspect.ts     # pnpm inspect CLI
+│   │   │   └── smoke-test.ts  # Smoke test
+│   │   └── test/          # 42 passing tests
+│   │       ├── fixtures/
+│   │       │   ├── api-responses/
+│   │       │   └── scenarios/
+│   │       ├── agent-loop.test.ts
+│   │       ├── issue-manager.test.ts
+│   │       ├── risk-model.test.ts
+│   │       └── voice-services.test.ts
+│   └── web/               # React + Vite frontend
 │       ├── src/
-│       │   ├── agent/     # Agent loop workflow
-│       │   │   ├── agent-loop.ts      # Multi-step agentic workflow
-│       │   │   ├── issue-manager.ts   # Issue tracking & assignment
-│       │   │   └── voice-services.ts  # Alert generation + TTS
-│       │   ├── models/    # Provider abstractions
-│       │   │   ├── baseten.ts         # Muse Spark Open (Baseten)
-│       │   │   ├── meta-model-api.ts  # SAM 3.1, Muse Spark, Voice
-│       │   │   └── risk-model.ts      # 5x5 risk matrix + controls
-│       │   ├── pipeline/  # Hazard detection pipeline
-│       │   │   ├── hazard-detection-v2.ts  # Risk-aware pipeline
-│       │   │   └── overlay-renderer.ts     # Image annotation
-│       │   ├── safety-rules/
-│       │   │   └── rule-packs-v2.ts   # Risk engineering rules
-│       │   └── storage/
-│       │       └── dynamodb-store.ts  # Issue persistence
-│       ├── scripts/
-│       │   ├── agent-loop.ts  # pnpm loop CLI
-│       │   ├── inspect.ts     # pnpm inspect CLI
-│       │   └── smoke-test.ts  # Smoke test
-│       └── test/          # 39 passing tests
-│           ├── fixtures/
-│           │   ├── api-responses/
-│           │   └── scenarios/
-│           ├── agent-loop.test.ts
-│           ├── issue-manager.test.ts
-│           ├── risk-model.test.ts
-│           └── voice-services.test.ts
+│       │   ├── pages/
+│       │   │   ├── GlassesView.tsx   # HUD camera interface
+│       │   │   └── Dashboard.tsx     # Issue tracking dashboard
+│       │   ├── api.ts     # API client
+│       │   ├── types.ts   # TypeScript types
+│       │   └── App.tsx    # Main app + routing
+│       └── package.json
+├── android/               # Kotlin glasses integration
+│   ├── app/
+│   │   └── src/main/java/com/meta/sitesentinel/
+│   │       └── MainActivity.kt       # Wearables SDK integration
+│   └── README.md          # Setup and Mock Device Kit guide
 ├── infra/                 # SST infrastructure
 │   ├── api.ts            # Lambda with 4 endpoints
 │   └── package.json
-├── sst.config.ts         # SST v3 + DynamoDB
+├── sst.config.ts         # SST v3 + DynamoDB + S3 + StaticSite
 └── package.json          # Workspace root
 ```
 
@@ -85,9 +152,9 @@ sitesentinel/
 
 ### Prerequisites
 - Node.js 18+ and pnpm
-- AWS account (for deployment, optional for Day 1)
+- AWS account for deployment
 - Baseten account for Muse Spark Open: https://baseten.co
-- Meta Model API key (future): https://dev.meta.ai/
+- Meta Model API key: https://dev.meta.ai/
 
 ### Installation
 
@@ -98,8 +165,9 @@ pnpm install
 # Copy environment template
 cp .env.example .env
 
-# Add your Baseten API key to .env
+# Add your API keys to .env
 # BASETEN_API_KEY=your_key_here
+# META_API_KEY=your_key_here
 ```
 
 ### Development
@@ -122,6 +190,10 @@ pnpm inspect <image-path> [rule-pack]
 
 # Run agent loop (requires META_API_KEY or BASETEN_API_KEY)
 pnpm loop <before.jpg> <after.jpg> [--pack construction] [--zone site-main]
+
+# Start web app locally
+pnpm --filter @sitesentinel/web dev
+# Visit http://localhost:3000
 ```
 
 ### Agent Loop CLI
@@ -202,16 +274,24 @@ See `.env.example` for all required variables:
 
 **Security Note:** This is a PUBLIC repository for the hackathon. Never commit API keys or secrets. All sensitive values must stay in `.env` (gitignored).
 
-## Deployment (Coming Soon)
+## Deployment
 
 ```bash
-# Deploy to AWS (Day 2+)
+# Deploy infrastructure to AWS
 pnpm deploy
 
 # Set secrets
 sst secret set BasetenApiKey <your-key>
 sst secret set MetaApiKey <your-key>
+
+# Web app will be deployed to CloudFront
+# API will be accessible via Lambda Function URL
 ```
+
+The deploy command will output:
+- `api`: Lambda function URL for the inspection API
+- `web`: CloudFront URL for the web app
+- `imagesBucket`: S3 bucket name for image/overlay storage
 
 ## Roadmap
 
@@ -249,15 +329,29 @@ sst secret set MetaApiKey <your-key>
 - [x] API routes: POST /inspect, GET /issues, POST /issues/{id}/verify, POST /reports/voice
 - [x] CLI: `pnpm loop <before.jpg> <after.jpg>` runs complete loop end-to-end
 - [x] Muse Voice Transcribe integration hook (POST /v1/asr/transcribe)
-- [x] 39 unit tests passing (risk model, issue manager, voice, rule packs v2)
+- [x] 42 unit tests passing (risk model, issue manager, voice, rule packs v2)
 - [x] All typecheck and lint checks pass
 
+### Day 4 ✅ (Nov 2, 2026)
+- [x] Web app (Vite + React + TypeScript)
+  - [x] Glasses View: Mobile HUD with camera, auto-capture, voice alerts, verify mode
+  - [x] Dashboard: Issue list, 5x5 risk heatmap, site risk score, audit timelines
+  - [x] Browser APIs: getUserMedia, speechSynthesis, MediaRecorder
+- [x] S3 image storage with presigned URLs
+- [x] CORS-enabled API
+- [x] Android glasses integration skeleton
+  - [x] Kotlin app with Wearables SDK structure
+  - [x] Mock Device Kit setup guide
+  - [x] Frame streaming to /inspect endpoint
+- [x] Architecture diagram (Mermaid)
+- [x] README updated with all Meta tools and hackathon details
+
 ### Future
-- [ ] Meta Ray-Ban glasses integration
-- [ ] Real-time video processing
+- [ ] Production Meta Ray-Ban glasses integration
+- [ ] Real-time video processing with frame buffering
 - [ ] Multi-frame analysis and tracking
 - [ ] Company-specific safety manual upload
-- [ ] Dashboard for alert management
+- [ ] Advanced dashboard analytics
 
 ## API Endpoints
 
@@ -335,11 +429,42 @@ Transcribes spoken worker report.
 
 **Event:** Meta Global AI Developer Hackathon  
 **Build Window:** October 27 – November 4, 2026  
-**Day 1:** October 27, 2026 - Foundation scaffold  
-**Day 2:** October 28, 2026 - Hazard detection pipeline  
-**Day 3:** November 2, 2026 - Agent loop + risk engineering
+**Submission Deadline:** November 5, 2026 03:00 WAT
+
+**Daily Progress:**
+- **Day 1** (Oct 27): Foundation scaffold, model clients, smoke test
+- **Day 2** (Oct 28): Hazard detection pipeline, SAM 3.1 + Muse Spark integration
+- **Day 3** (Nov 2): Agent loop workflow, risk engineering, DynamoDB persistence
+- **Day 4** (Nov 2): Web app (HUD + Dashboard), S3 storage, Android skeleton
 
 All code in this repository was written during the hackathon build window. This is an open-source project built for demonstration and educational purposes.
+
+### Day 4 Highlights
+
+- **Web Application**: Full-stack React + Vite deployment with SST StaticSite
+  - **Glasses View (HUD)**: Mobile-first camera interface styled as Meta Ray-Ban POV with:
+    - Live camera feed with `getUserMedia` (rear camera)
+    - Auto-capture every 10 seconds or manual tap-to-inspect
+    - Overlay bounding boxes on detected hazards
+    - Browser `speechSynthesis` for spoken top-risk alerts
+    - Push-to-talk voice report with `MediaRecorder` → transcription
+    - Fix verification mode with before/after comparison
+    - "Built for Meta Ray-Ban glasses" notice
+  - **Dashboard**: Comprehensive issue tracking with:
+    - Issues list with status, owner, risk band, and timestamps
+    - 5×5 Likelihood × Impact risk heatmap
+    - Site risk score (weighted average of all issues)
+    - Risk distribution bar charts (very-high, high, medium, low)
+    - Per-issue modal with audit trail timeline and before/after images
+- **S3 Image Storage**: All images and overlays stored in S3 with public URLs
+- **CORS-Enabled API**: Lambda endpoints support browser requests from web app
+- **Android Glasses Integration**: Minimal Kotlin app skeleton with:
+  - Meta Wearables Device Access Toolkit structure
+  - Camera stream subscription hooks
+  - HTTP client for `/inspect` API calls
+  - Mock Device Kit setup guide for testing without physical glasses
+- **Architecture Diagram**: Mermaid diagram showing full flow from glasses → API → agent loop → storage
+- **Meta Tools Documentation**: Complete list of all Meta AI models and SDKs used
 
 ### Day 3 Highlights
 
@@ -351,7 +476,7 @@ All code in this repository was written during the hackathon build window. This 
 - **Fix Verification**: Re-evaluates after-images with SAM+Spark, decides resolved/not resolved with reasoning
 - **API Routes**: 4 endpoints (inspect, list issues, verify, voice reports)
 - **CLI Agent Loop**: `pnpm loop` runs complete before/after workflow end-to-end
-- **39 Unit Tests Passing**: Full coverage of risk model, issue management, voice, and agent loop components
+- **42 Unit Tests Passing**: Full coverage of risk model, issue management, voice, and agent loop components
 
 ### Day 2 Highlights
 
