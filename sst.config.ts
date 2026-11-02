@@ -22,11 +22,26 @@ export default $config({
     const basetenApiKey = new sst.Secret('BasetenApiKey');
     const metaApiKey = new sst.Secret('MetaApiKey');
 
+    // DynamoDB table for issues
+    const issuesTable = new sst.aws.Dynamo('IssuesTable', {
+      fields: {
+        id: 'string',
+        siteId: 'string',
+        status: 'string',
+        createdAt: 'string',
+      },
+      primaryIndex: { hashKey: 'id' },
+      globalIndexes: {
+        bySite: { hashKey: 'siteId', rangeKey: 'createdAt' },
+        byStatus: { hashKey: 'status', rangeKey: 'createdAt' },
+      },
+    });
+
     // API Lambda function
     const api = new sst.aws.Function('Api', {
       handler: 'infra/api.handler',
       url: true,
-      link: [basetenApiKey, metaApiKey],
+      link: [basetenApiKey, metaApiKey, issuesTable],
       environment: {
         NODE_ENV: 'production',
       },
@@ -34,6 +49,7 @@ export default $config({
 
     return {
       api: api.url,
+      issuesTable: issuesTable.name,
     };
   },
 });
