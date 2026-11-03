@@ -14,6 +14,8 @@ import { DynamoDBIssueStore } from '@sitesentinel/core/src/storage/dynamodb-stor
 import type { Issue } from '@sitesentinel/core/src/agent/issue-manager.js';
 import { loadSiteRoster } from '@sitesentinel/core/src/agent/issue-manager.js';
 import { MuseVoiceTranscribe } from '@sitesentinel/core/src/agent/voice-services.js';
+import { S3Storage } from '@sitesentinel/core/src/storage/s3-storage.js';
+import { renderDetectionBoxes } from '@sitesentinel/core/src/pipeline/overlay-renderer.js';
 
 interface RequestEvent {
   requestContext: { http: { method: string; path: string } };
@@ -23,19 +25,34 @@ interface RequestEvent {
   queryStringParameters?: Record<string, string>;
 }
 
+const CORS_HEADERS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type',
+};
+
 export async function handler(event: RequestEvent) {
   const { method, path } = event.requestContext.http;
+
+  // Handle preflight
+  if (method === 'OPTIONS') {
+    return {
+      statusCode: 200,
+      headers: CORS_HEADERS,
+      body: '',
+    };
+  }
 
   // Health check
   if (method === 'GET' && path === '/health') {
     return {
       statusCode: 200,
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
       body: JSON.stringify({
         status: 'healthy',
         service: 'SiteSentinel Agent API',
         timestamp: new Date().toISOString(),
-        version: '3.0.0-agent-loop',
+        version: '4.0.0-web-glasses',
       }),
     };
   }
@@ -62,7 +79,7 @@ export async function handler(event: RequestEvent) {
 
   return {
     statusCode: 404,
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
     body: JSON.stringify({
       error: 'Not Found',
       availableEndpoints: [
@@ -104,10 +121,16 @@ async function handleInspect(event: RequestEvent) {
     const siteId = body.siteId ?? 'default-site';
     const provider = body.provider ?? 'meta';
 
-    // Get API keys
+    // Get resources
     const metaApiKey = getResourceValue('MetaApiKey');
     const basetenApiKey = getResourceValue('BasetenApiKey');
     const issuesTableName = getResourceValue('IssuesTable');
+    const imagesBucketName = getResourceValue('ImagesBucket');
+
+    // Upload image to S3
+    const s3Storage = new S3Storage({ bucketName: imagesBucketName });
+    const imageKey = await s3Storage.uploadImage(imageBuffer, 'image/jpeg', 'inspections');
+    const imageUrl = s3Storage.getPublicUrl(imageKey);
 
     // Create providers
     const { samProvider, sparkProvider } = createProviders(
@@ -133,21 +156,27 @@ async function handleInspect(event: RequestEvent) {
     const result = await agent.detectAndCreateIssues(
       imageBuffer,
       zone,
-      `s3://images/${Date.now()}.jpg`
+      imageUrl
     );
 
-    // Optionally render overlay
-    // TODO: Update overlay renderer to work with new HazardFinding type
-    let overlayBase64: string | undefined;
-    // if (body.returnOverlay && result.issues.length > 0) {
-    //   const findings = ...
-    //   const overlayBuffer = await renderOverlay(imageBuffer, findings);
-    //   overlayBase64 = overlayBuffer.toString('base64');
-    // }
+    // Render overlay
+    let overlayUrl: string | undefined;
+    if (body.returnOverlay !== false && result.issues.length > 0) {
+      const boxes = result.issues.flatMap(issue => issue.evidenceBoxes);
+      const labels = result.issues.flatMap(issue => 
+        issue.evidenceBoxes.map(() => issue.title)
+      );
+      
+      if (boxes.length > 0) {
+        const overlayBuffer = await renderDetectionBoxes(imageBuffer, boxes, labels);
+        const overlayKey = await s3Storage.uploadImage(overlayBuffer, 'image/png', 'overlays');
+        overlayUrl = s3Storage.getPublicUrl(overlayKey);
+      }
+    }
 
     return {
       statusCode: 200,
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
       body: JSON.stringify({
         issues: result.issues.map((issue: Issue) => ({
           id: issue.id,
@@ -158,11 +187,11 @@ async function handleInspect(event: RequestEvent) {
           assignedTo: issue.assignedTo,
           status: issue.status,
           voiceAlert: issue.voiceAlert,
+          imageUrl: issue.imageUrl,
+          evidenceBoxes: issue.evidenceBoxes,
         })),
         auditTrail: result.auditTrail,
-        overlay: overlayBase64
-          ? `data:image/png;base64,${overlayBase64}`
-          : undefined,
+        overlayUrl,
       }),
     };
   } catch (error) {
@@ -189,7 +218,7 @@ async function handleListIssues(event: RequestEvent) {
 
     return {
       statusCode: 200,
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
       body: JSON.stringify({
         issues: issues.map((issue: Issue) => ({
           id: issue.id,
@@ -197,12 +226,18 @@ async function handleListIssues(event: RequestEvent) {
           category: issue.category,
           riskBand: issue.riskAssessment.riskBand,
           riskScore: issue.riskAssessment.riskScore,
+          likelihood: issue.riskAssessment.likelihood,
+          impact: issue.riskAssessment.impact,
           zone: issue.zone,
           status: issue.status,
           assignedTo: issue.assignedTo,
           createdAt: issue.createdAt,
           updatedAt: issue.updatedAt,
           resolvedAt: issue.resolvedAt,
+          imageUrl: issue.imageUrl,
+          evidenceBoxes: issue.evidenceBoxes,
+          auditTrail: issue.auditTrail,
+          verificationImages: issue.verificationImages,
         })),
         count: issues.length,
       }),
@@ -242,6 +277,7 @@ async function handleVerifyFix(event: RequestEvent) {
     const metaApiKey = getResourceValue('MetaApiKey');
     const basetenApiKey = getResourceValue('BasetenApiKey');
     const issuesTableName = getResourceValue('IssuesTable');
+    const imagesBucketName = getResourceValue('ImagesBucket');
 
     const issueStore = new DynamoDBIssueStore(issuesTableName);
 
@@ -250,6 +286,11 @@ async function handleVerifyFix(event: RequestEvent) {
     if (!issue) {
       return errorResponse(404, 'Issue not found');
     }
+
+    // Upload after image to S3
+    const s3Storage = new S3Storage({ bucketName: imagesBucketName });
+    const afterImageKey = await s3Storage.uploadImage(afterImageBuffer, 'image/jpeg', 'verifications');
+    const afterImageUrl = s3Storage.getPublicUrl(afterImageKey);
 
     // Recreate pipeline (we need to infer the rule pack - use construction as default)
     const { samProvider, sparkProvider } = createProviders(
@@ -276,13 +317,33 @@ async function handleVerifyFix(event: RequestEvent) {
     const verification = await agent.verifyFix(
       issueId,
       afterImageBuffer,
-      `s3://images/verify-${Date.now()}.jpg`
+      afterImageUrl
     );
+
+    // Render overlay for after image
+    let overlayUrl: string | undefined;
+    const afterFindings = await pipeline.detect(afterImageBuffer);
+    if (afterFindings.length > 0) {
+      const boxes = afterFindings.flatMap(f => f.evidenceBoxes);
+      const labels = afterFindings.flatMap(f => 
+        f.evidenceBoxes.map(() => f.rule.title)
+      );
+      
+      if (boxes.length > 0) {
+        const overlayBuffer = await renderDetectionBoxes(afterImageBuffer, boxes, labels);
+        const overlayKey = await s3Storage.uploadImage(overlayBuffer, 'image/png', 'overlays');
+        overlayUrl = s3Storage.getPublicUrl(overlayKey);
+      }
+    }
 
     return {
       statusCode: 200,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(verification),
+      headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
+      body: JSON.stringify({
+        ...verification,
+        afterImageUrl,
+        overlayUrl,
+      }),
     };
   } catch (error) {
     return errorResponse(500, error instanceof Error ? error.message : 'Unknown error');
@@ -324,7 +385,7 @@ async function handleVoiceReport(event: RequestEvent) {
 
     return {
       statusCode: 200,
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
       body: JSON.stringify({
         transcription: transcription.text,
         siteId,
@@ -395,7 +456,7 @@ function createProviders(
 function errorResponse(statusCode: number, message: string) {
   return {
     statusCode,
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
     body: JSON.stringify({ error: message }),
   };
 }

@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "sst dev",
+    "dev": "concurrently \"pnpm dev:api\" \"pnpm dev:web\"",
+    "dev:api": "pnpm --filter @sitesentinel/dev-api start",
+    "dev:web": "pnpm --filter @sitesentinel/web dev",
     "build": "sst build",
     "deploy": "sst deploy",
     "remove": "sst remove",
@@ -20,6 +22,7 @@
   "devDependencies": {
     "@eslint/js": "^9.15.0",
     "@types/node": "^22.10.0",
+    "concurrently": "^9.1.2",
     "eslint": "^9.15.0",
     "prettier": "^3.3.3",
     "sst": "^3.3.33",

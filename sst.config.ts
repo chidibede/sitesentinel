@@ -37,19 +37,38 @@ export default $config({
       },
     });
 
+    // S3 bucket for images and overlays
+    const imagesBucket = new sst.aws.Bucket('ImagesBucket', {
+      public: true,
+    });
+
     // API Lambda function
     const api = new sst.aws.Function('Api', {
       handler: 'infra/api.handler',
       url: true,
-      link: [basetenApiKey, metaApiKey, issuesTable],
+      link: [basetenApiKey, metaApiKey, issuesTable, imagesBucket],
       environment: {
         NODE_ENV: 'production',
       },
     });
 
+    // Web frontend
+    const web = new sst.aws.StaticSite('Web', {
+      path: 'packages/web',
+      build: {
+        command: 'pnpm run build',
+        output: 'dist',
+      },
+      environment: {
+        VITE_API_URL: api.url,
+      },
+    });
+
     return {
       api: api.url,
+      web: web.url,
       issuesTable: issuesTable.name,
+      imagesBucket: imagesBucket.name,
     };
   },
 });
