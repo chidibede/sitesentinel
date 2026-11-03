@@ -17,13 +17,13 @@ export interface MetaModelAPIConfig {
 }
 
 export interface BoundingBox {
-  objectId: number;
   x1: number;
   y1: number;
   x2: number;
   y2: number;
-  width: number;
-  height: number;
+  width?: number;
+  height?: number;
+  objectId?: number;
 }
 
 export interface MaskData {

@@ -14,7 +14,8 @@
     "format:check": "prettier --check .",
     "test": "pnpm -r test",
     "smoke": "tsx packages/core/scripts/smoke-test.ts",
-    "inspect": "tsx packages/core/scripts/inspect.ts"
+    "inspect": "tsx packages/core/scripts/inspect.ts",
+    "loop": "tsx packages/core/scripts/agent-loop.ts"
   },
   "devDependencies": {
     "@eslint/js": "^9.15.0",
