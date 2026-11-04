@@ -38,14 +38,19 @@ export default $config({
     });
 
     // S3 bucket for images and overlays
-    const imagesBucket = new sst.aws.Bucket('ImagesBucket', {
-      public: true,
-    });
+    // Private bucket: the API returns presigned GET URLs for evidence images.
+    const imagesBucket = new sst.aws.Bucket('ImagesBucket');
 
     // API Lambda function
     const api = new sst.aws.Function('Api', {
       handler: 'infra/api.handler',
-      url: true,
+      // Function URL (no API Gateway 29s cap). CORS is handled in the handler
+      // itself, so disable URL-level CORS to avoid duplicate CORS headers.
+      url: { cors: false },
+      // Inspect/verify call SAM + Muse Spark and take ~20-60s; the SST default
+      // of 20s made /inspect return 502 on AWS.
+      timeout: '120 seconds',
+      memory: '1536 MB',
       link: [basetenApiKey, metaApiKey, issuesTable, imagesBucket],
       environment: {
         NODE_ENV: 'production',

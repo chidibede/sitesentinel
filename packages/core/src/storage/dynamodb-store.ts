@@ -8,6 +8,7 @@ import {
   PutCommand,
   GetCommand,
   QueryCommand,
+  ScanCommand,
   UpdateCommand,
 } from '@aws-sdk/lib-dynamodb';
 import type { IssueStore, Issue, IssueStatus, AuditEntry } from '../agent/issue-manager.js';
@@ -82,7 +83,9 @@ export class DynamoDBIssueStore implements IssueStore {
         new QueryCommand({
           TableName: this.tableName,
           IndexName: 'byStatus',
-          KeyConditionExpression: 'status = :status',
+          // `status` is a DynamoDB reserved word
+          KeyConditionExpression: '#status = :status',
+          ExpressionAttributeNames: { '#status': 'status' },
           ExpressionAttributeValues: {
             ':status': filters.status,
           },
@@ -99,7 +102,13 @@ export class DynamoDBIssueStore implements IssueStore {
       return items;
     }
 
-    throw new Error('List operation requires at least siteId or status filter');
+    // No siteId/status filter: fall back to a scan (demo-sized table).
+    const result = await this.client.send(new ScanCommand({ TableName: this.tableName }));
+    let items = (result.Items as Issue[] | undefined) ?? [];
+    if (filters?.zone) {
+      items = items.filter((i) => i.zone === filters.zone);
+    }
+    return items.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 
   async update(id: string, updates: Partial<Issue>): Promise<void> {

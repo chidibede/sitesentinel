@@ -25,6 +25,8 @@ interface RequestEvent {
   queryStringParameters?: Record<string, string>;
 }
 
+const DEFAULT_SITE_ID = 'demo-site';
+
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
@@ -118,7 +120,7 @@ async function handleInspect(event: RequestEvent) {
     const imageBuffer = decodeImageData(body.image);
     const rulePackId = body.rulePackId ?? 'construction';
     const zone = body.zone ?? 'site-main';
-    const siteId = body.siteId ?? 'default-site';
+    const siteId = body.siteId ?? DEFAULT_SITE_ID;
     const provider = body.provider ?? 'meta';
 
     // Get resources
@@ -209,18 +211,28 @@ async function handleListIssues(event: RequestEvent) {
 
     // Parse query parameters from Lambda event
     const params = event.queryStringParameters ?? {};
-    const siteId = params.siteId ?? undefined;
+    const siteId = params.siteId ?? (params.status ? undefined : DEFAULT_SITE_ID);
     const statusParam = params.status;
     const status = (statusParam as 'open' | 'assigned' | 'in-progress' | 'pending-verification' | 'resolved' | 'reopened' | 'closed' | undefined) ?? undefined;
     const zone = params.zone ?? undefined;
 
     const issues = await issueStore.list({ siteId, status, zone });
+    const s3Storage = new S3Storage({ bucketName: getResourceValue('ImagesBucket') });
+    const sign = (url?: string) => presignIfOwned(s3Storage, getResourceValue('ImagesBucket'), url);
+    const signed = await Promise.all(
+      issues.map(async (issue: Issue) => ({
+        imageUrl: await sign(issue.imageUrl),
+        verificationImages: issue.verificationImages
+          ? await Promise.all(issue.verificationImages.map(async (u) => (await sign(u)) ?? u))
+          : undefined,
+      }))
+    );
 
     return {
       statusCode: 200,
       headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
       body: JSON.stringify({
-        issues: issues.map((issue: Issue) => ({
+        issues: issues.map((issue: Issue, i: number) => ({
           id: issue.id,
           title: issue.title,
           category: issue.category,
@@ -234,10 +246,10 @@ async function handleListIssues(event: RequestEvent) {
           createdAt: issue.createdAt,
           updatedAt: issue.updatedAt,
           resolvedAt: issue.resolvedAt,
-          imageUrl: issue.imageUrl,
+          imageUrl: signed[i]?.imageUrl,
           evidenceBoxes: issue.evidenceBoxes,
           auditTrail: issue.auditTrail,
-          verificationImages: issue.verificationImages,
+          verificationImages: signed[i]?.verificationImages,
         })),
         count: issues.length,
       }),
@@ -256,7 +268,10 @@ async function handleVerifyFix(event: RequestEvent) {
       return errorResponse(400, 'Request body required');
     }
 
-    const issueId = event.pathParameters?.id;
+    // Lambda Function URLs do not populate pathParameters; parse from the path.
+    const issueId =
+      event.pathParameters?.id ??
+      decodeURIComponent(event.requestContext.http.path.split('/')[2] ?? '');
     if (!issueId) {
       return errorResponse(400, 'Issue ID required in path');
     }
@@ -264,6 +279,7 @@ async function handleVerifyFix(event: RequestEvent) {
     const body = JSON.parse(event.body) as {
       afterImage: string;
       provider?: 'meta' | 'baseten';
+      returnOverlay?: boolean;
     };
 
     if (!body.afterImage) {
@@ -322,7 +338,8 @@ async function handleVerifyFix(event: RequestEvent) {
 
     // Render overlay for after image
     let overlayUrl: string | undefined;
-    const afterFindings = await pipeline.detect(afterImageBuffer);
+    // Re-running detection doubles latency; only do it when explicitly asked.
+    const afterFindings = body.returnOverlay === true ? await pipeline.detect(afterImageBuffer) : [];
     if (afterFindings.length > 0) {
       const boxes = afterFindings.flatMap(f => f.evidenceBoxes);
       const labels = afterFindings.flatMap(f => 
@@ -459,4 +476,27 @@ function errorResponse(statusCode: number, message: string) {
     headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
     body: JSON.stringify({ error: message }),
   };
+}
+
+/**
+ * Helper: turn a URL/key for an object in our private bucket into a presigned GET URL.
+ */
+async function presignIfOwned(
+  s3Storage: S3Storage,
+  bucketName: string,
+  url?: string
+): Promise<string | undefined> {
+  if (!url || !bucketName) return url;
+  try {
+    let key: string | undefined;
+    if (!url.startsWith('http')) {
+      key = url;
+    } else {
+      const u = new URL(url);
+      if (u.hostname.startsWith(`${bucketName}.s3`)) key = decodeURIComponent(u.pathname.slice(1));
+    }
+    return key ? await s3Storage.getPresignedUrl(key, 6 * 3600) : url;
+  } catch {
+    return url;
+  }
 }
