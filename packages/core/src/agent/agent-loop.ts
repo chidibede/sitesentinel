@@ -45,11 +45,11 @@ export class AgentLoop {
     zone: string,
     imagePath: string
   ): Promise<DetectionResult> {
-    const auditTrail: AuditEntry[] = [];
+    const globalAuditTrail: AuditEntry[] = [];
     const issues: Issue[] = [];
 
     // Step 1: Detect hazards
-    auditTrail.push({
+    globalAuditTrail.push({
       timestamp: new Date().toISOString(),
       action: 'detect_start',
       actor: 'system',
@@ -58,7 +58,7 @@ export class AgentLoop {
 
     const findings = await this.config.pipeline.detect(imageBuffer);
 
-    auditTrail.push({
+    globalAuditTrail.push({
       timestamp: new Date().toISOString(),
       action: 'detect_complete',
       actor: 'system',
@@ -73,13 +73,12 @@ export class AgentLoop {
       const issue = await this.createIssueFromFinding(
         finding,
         zone,
-        imagePath,
-        auditTrail
+        imagePath
       );
       issues.push(issue);
     }
 
-    return { issues, auditTrail };
+    return { issues, auditTrail: globalAuditTrail };
   }
 
   /**
@@ -88,16 +87,17 @@ export class AgentLoop {
   private async createIssueFromFinding(
     finding: HazardFinding,
     zone: string,
-    imagePath: string,
-    auditTrail: AuditEntry[]
+    imagePath: string
   ): Promise<Issue> {
+    const issueAuditTrail: AuditEntry[] = [];
+
     // Step 2: Assess risk
     const riskAssessment = assessRisk(
       finding.rule.typicalLikelihood,
       finding.rule.typicalImpact
     );
 
-    auditTrail.push({
+    issueAuditTrail.push({
       timestamp: new Date().toISOString(),
       action: 'assess_risk',
       actor: 'system',
@@ -130,10 +130,10 @@ export class AgentLoop {
       createdAt: now,
       updatedAt: now,
       recommendedControl: finding.rule.recommendedControl,
-      auditTrail: [],
+      auditTrail: issueAuditTrail,
     };
 
-    auditTrail.push({
+    issueAuditTrail.push({
       timestamp: new Date().toISOString(),
       action: 'create_issue',
       actor: 'system',
@@ -153,7 +153,7 @@ export class AgentLoop {
       issue.assignedAt = new Date().toISOString();
       issue.status = 'assigned';
 
-      auditTrail.push({
+      issueAuditTrail.push({
         timestamp: new Date().toISOString(),
         action: 'assign_issue',
         actor: 'system',
@@ -169,7 +169,7 @@ export class AgentLoop {
     const voiceAlert = generateVoiceAlert(issue);
     issue.voiceAlert = voiceAlert;
 
-    auditTrail.push({
+    issueAuditTrail.push({
       timestamp: new Date().toISOString(),
       action: 'notify',
       actor: 'system',
@@ -179,9 +179,6 @@ export class AgentLoop {
         notificationSent: true,
       },
     });
-
-    // Copy audit trail to issue
-    issue.auditTrail = [...auditTrail];
 
     // Persist issue
     await this.config.issueStore.create(issue);
@@ -229,7 +226,9 @@ export class AgentLoop {
       const matchedFinding = afterFindings.find(
         (f) => f.rule.id === issue.ruleId
       );
-      reason = `The ${issue.category} hazard "${issue.title}" is still present. Evidence: ${matchedFinding?.evidence ?? 'Detected'}. Further corrective action is required.`;
+      const evidence = matchedFinding?.evidence ?? 'Detected';
+      const trimmedEvidence = evidence.replace(/[.,;:!?]+$/, '');
+      reason = `The ${issue.category} hazard "${issue.title}" is still present. Evidence: ${trimmedEvidence}. Further corrective action is required.`;
     }
 
     auditTrail.push({
@@ -376,7 +375,9 @@ export class AgentLoop {
       const matchedFinding = afterFindings.find(
         (f) => f.rule.id === issue.ruleId
       );
-      reason = `The ${issue.category} hazard "${issue.title}" is still present. Evidence: ${matchedFinding?.evidence ?? 'Detected'}. Further corrective action is required.`;
+      const evidence = matchedFinding?.evidence ?? 'Detected';
+      const trimmedEvidence = evidence.replace(/[.,;:!?]+$/, '');
+      reason = `The ${issue.category} hazard "${issue.title}" is still present. Evidence: ${trimmedEvidence}. Further corrective action is required.`;
     }
 
     auditTrail.push({

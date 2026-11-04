@@ -5,7 +5,7 @@
  * Usage: pnpm loop <before.jpg> <after.jpg> [--pack construction|oil-and-gas] [--zone area-1]
  */
 
-import { readFileSync, writeFileSync } from 'fs';
+import { readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { resolve, basename } from 'path';
 import { HazardDetectionPipeline } from '../src/pipeline/hazard-detection-v2.js';
 import { MetaModelAPIProvider } from '../src/models/meta-model-api.js';
@@ -136,10 +136,11 @@ async function main() {
     console.log();
 
     // Render overlays
+    mkdirSync('./out', { recursive: true });
     const beforeBaseName = basename(beforePath, '.jpg').replace(/\.(jpeg|png)$/i, '');
     const afterBaseName = basename(afterPath, '.jpg').replace(/\.(jpeg|png)$/i, '');
-    const beforeOverlayPath = `${beforeBaseName}-${rulePackId}-before-overlay.png`;
-    const afterOverlayPath = `${afterBaseName}-${rulePackId}-after-overlay.png`;
+    const beforeOverlayPath = `./out/${beforeBaseName}-${rulePackId}-before-overlay.png`;
+    const afterOverlayPath = `./out/${afterBaseName}-${rulePackId}-after-overlay.png`;
 
     if (result.detectionResult.issues.length > 0) {
       console.log('🎨 Rendering overlays...');

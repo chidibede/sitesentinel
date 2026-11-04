@@ -38,11 +38,22 @@ export default $config({
       },
     });
 
+    // S3 bucket for images and overlays
+    // Private bucket: the API returns presigned GET URLs for evidence images.
+    const imagesBucket = new sst.aws.Bucket('ImagesBucket');
+
     // API Lambda function. Direct calls still require the x-api-key header.
+    // Browser traffic goes through CloudFront, which attaches that header.
     const api = new sst.aws.Function('Api', {
       handler: 'infra/api.handler',
-      url: true,
-      link: [basetenApiKey, metaApiKey, apiKey, issuesTable],
+      // Function URL (no API Gateway 29s cap). CORS is handled in the handler
+      // itself, so disable URL-level CORS to avoid duplicate CORS headers.
+      url: { cors: false },
+      // Inspect/verify call SAM + Muse Spark and take ~20-60s; the SST default
+      // of 20s made /inspect return 502 on AWS.
+      timeout: '120 seconds',
+      memory: '1536 MB',
+      link: [basetenApiKey, metaApiKey, apiKey, issuesTable, imagesBucket],
       environment: {
         NODE_ENV: 'production',
       },
@@ -54,6 +65,8 @@ export default $config({
           'sharp',
           '@aws-sdk/client-dynamodb',
           '@aws-sdk/lib-dynamodb',
+          '@aws-sdk/client-s3',
+          '@aws-sdk/s3-request-presigner',
           'aws4fetch',
         ],
       },
@@ -84,6 +97,8 @@ export default $config({
                   httpPort: 80,
                   httpsPort: 443,
                   originProtocolPolicy: 'https-only',
+                  // Default CloudFront quota caps this at 60s. The function
+                  // allows 120s; the glasses view polls if a long call is cut.
                   originReadTimeout: 60,
                   originSslProtocols: ['TLSv1.2'],
                 },
@@ -117,6 +132,7 @@ export default $config({
       api: api.url,
       web: web.url,
       issuesTable: issuesTable.name,
+      imagesBucket: imagesBucket.name,
     };
   },
 });

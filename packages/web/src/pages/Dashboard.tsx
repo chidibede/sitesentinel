@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { apiClient } from '../api';
+import { apiClient, SITE_ID } from '../api';
 import type { Issue, IssueStatus, RiskBand } from '../types';
 
 const Dashboard = () => {
@@ -17,7 +17,8 @@ const Dashboard = () => {
     try {
       setLoading(true);
       setApiError(null);
-      const filters = statusFilter !== 'all' ? { status: statusFilter } : {};
+      const filters =
+        statusFilter !== 'all' ? { siteId: SITE_ID, status: statusFilter } : { siteId: SITE_ID };
       const response = await apiClient.listIssues(filters);
       setIssues(response.issues);
     } catch (error) {

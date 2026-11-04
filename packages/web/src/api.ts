@@ -47,7 +47,7 @@ class ApiClient {
     const response = await fetch(url);
 
     if (!response.ok) {
-      const error = await response.json() as { error?: string };
+      const error = await response.json().catch(() => ({})) as { error?: string };
       throw new Error(error.error ?? 'Failed to fetch issues');
     }
 
@@ -55,15 +55,19 @@ class ApiClient {
   }
 
   async verifyFix(issueId: string, request: VerifyRequest): Promise<VerifyResponse> {
+    // Verification runs the full model pipeline; don't let the request hang forever.
+    const controller = new AbortController();
+    const timer = setTimeout(() => { controller.abort(); }, 150_000);
     const response = await fetch(`${this.baseUrl}/issues/${issueId}/verify`, {
       method: 'POST',
+      signal: controller.signal,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(request),
-    });
+    }).finally(() => { clearTimeout(timer); });
 
     if (!response.ok) {
-      const error = await response.json() as { error?: string };
-      throw new Error(error.error ?? 'Verification failed');
+      const error = await response.json().catch(() => ({})) as { error?: string };
+      throw new Error(error.error ?? `Verification failed (${String(response.status)})`);
     }
 
     return response.json() as Promise<VerifyResponse>;
@@ -84,5 +88,7 @@ class ApiClient {
     return response.json() as Promise<VoiceReportResponse>;
   }
 }
+
+export const SITE_ID = 'demo-site';
 
 export const apiClient = new ApiClient(API_URL);

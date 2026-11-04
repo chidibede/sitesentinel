@@ -15,6 +15,8 @@ import { DynamoDBIssueStore } from '@sitesentinel/core/src/storage/dynamodb-stor
 import type { Issue } from '@sitesentinel/core/src/agent/issue-manager.js';
 import { loadSiteRoster } from '@sitesentinel/core/src/agent/issue-manager.js';
 import { MuseVoiceTranscribe } from '@sitesentinel/core/src/agent/voice-services.js';
+import { S3Storage } from '@sitesentinel/core/src/storage/s3-storage.js';
+import { renderDetectionBoxes } from '@sitesentinel/core/src/pipeline/overlay-renderer.js';
 
 interface RequestEvent {
   requestContext: { http: { method: string; path: string } };
@@ -24,6 +26,14 @@ interface RequestEvent {
   rawQueryString?: string;
   queryStringParameters?: Record<string, string>;
 }
+
+const DEFAULT_SITE_ID = 'demo-site';
+
+const CORS_HEADERS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type',
+};
 
 export async function handler(event: RequestEvent) {
   if (!isAuthorized(event)) {
@@ -36,16 +46,25 @@ export async function handler(event: RequestEvent) {
     path = path.slice('/api'.length) || '/';
   }
 
+  // Handle preflight
+  if (method === 'OPTIONS') {
+    return {
+      statusCode: 200,
+      headers: CORS_HEADERS,
+      body: '',
+    };
+  }
+
   // Health check
   if (method === 'GET' && path === '/health') {
     return {
       statusCode: 200,
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
       body: JSON.stringify({
         status: 'healthy',
         service: 'SiteSentinel Agent API',
         timestamp: new Date().toISOString(),
-        version: '3.0.0-agent-loop',
+        version: '4.0.0-web-glasses',
       }),
     };
   }
@@ -62,7 +81,7 @@ export async function handler(event: RequestEvent) {
 
   // POST /issues/{id}/verify - Verify fix
   if (method === 'POST' && path.startsWith('/issues/') && path.endsWith('/verify')) {
-    return await handleVerifyFix(event);
+    return await handleVerifyFix(event, path);
   }
 
   // POST /reports/voice - Voice report transcription
@@ -72,7 +91,7 @@ export async function handler(event: RequestEvent) {
 
   return {
     statusCode: 404,
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
     body: JSON.stringify({
       error: 'Not Found',
       availableEndpoints: [
@@ -111,13 +130,19 @@ async function handleInspect(event: RequestEvent) {
     const imageBuffer = decodeImageData(body.image);
     const rulePackId = body.rulePackId ?? 'construction';
     const zone = body.zone ?? 'site-main';
-    const siteId = body.siteId ?? 'default-site';
+    const siteId = body.siteId ?? DEFAULT_SITE_ID;
     const provider = body.provider ?? 'meta';
 
-    // Get API keys
+    // Get resources
     const metaApiKey = getResourceValue('MetaApiKey');
     const basetenApiKey = getResourceValue('BasetenApiKey');
     const issuesTableName = getResourceValue('IssuesTable');
+    const imagesBucketName = getResourceValue('ImagesBucket');
+
+    // Upload image to S3
+    const s3Storage = new S3Storage({ bucketName: imagesBucketName });
+    const imageKey = await s3Storage.uploadImage(imageBuffer, 'image/jpeg', 'inspections');
+    const imageUrl = s3Storage.getPublicUrl(imageKey);
 
     // Create providers
     const { samProvider, sparkProvider } = createProviders(
@@ -143,21 +168,27 @@ async function handleInspect(event: RequestEvent) {
     const result = await agent.detectAndCreateIssues(
       imageBuffer,
       zone,
-      `s3://images/${Date.now()}.jpg`
+      imageUrl
     );
 
-    // Optionally render overlay
-    // TODO: Update overlay renderer to work with new HazardFinding type
-    let overlayBase64: string | undefined;
-    // if (body.returnOverlay && result.issues.length > 0) {
-    //   const findings = ...
-    //   const overlayBuffer = await renderOverlay(imageBuffer, findings);
-    //   overlayBase64 = overlayBuffer.toString('base64');
-    // }
+    // Render overlay
+    let overlayUrl: string | undefined;
+    if (body.returnOverlay !== false && result.issues.length > 0) {
+      const boxes = result.issues.flatMap(issue => issue.evidenceBoxes);
+      const labels = result.issues.flatMap(issue => 
+        issue.evidenceBoxes.map(() => issue.title)
+      );
+      
+      if (boxes.length > 0) {
+        const overlayBuffer = await renderDetectionBoxes(imageBuffer, boxes, labels);
+        const overlayKey = await s3Storage.uploadImage(overlayBuffer, 'image/png', 'overlays');
+        overlayUrl = s3Storage.getPublicUrl(overlayKey);
+      }
+    }
 
     return {
       statusCode: 200,
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
       body: JSON.stringify({
         issues: result.issues.map((issue: Issue) => ({
           id: issue.id,
@@ -168,11 +199,11 @@ async function handleInspect(event: RequestEvent) {
           assignedTo: issue.assignedTo,
           status: issue.status,
           voiceAlert: issue.voiceAlert,
+          imageUrl: issue.imageUrl,
+          evidenceBoxes: issue.evidenceBoxes,
         })),
         auditTrail: result.auditTrail,
-        overlay: overlayBase64
-          ? `data:image/png;base64,${overlayBase64}`
-          : undefined,
+        overlayUrl,
       }),
     };
   } catch (error) {
@@ -190,29 +221,45 @@ async function handleListIssues(event: RequestEvent) {
 
     // Parse query parameters from Lambda event
     const params = event.queryStringParameters ?? {};
-    const siteId = params.siteId ?? undefined;
+    const siteId = params.siteId ?? (params.status ? undefined : DEFAULT_SITE_ID);
     const statusParam = params.status;
     const status = (statusParam as 'open' | 'assigned' | 'in-progress' | 'pending-verification' | 'resolved' | 'reopened' | 'closed' | undefined) ?? undefined;
     const zone = params.zone ?? undefined;
 
     const issues = await issueStore.list({ siteId, status, zone });
+    const s3Storage = new S3Storage({ bucketName: getResourceValue('ImagesBucket') });
+    const sign = (url?: string) => presignIfOwned(s3Storage, getResourceValue('ImagesBucket'), url);
+    const signed = await Promise.all(
+      issues.map(async (issue: Issue) => ({
+        imageUrl: await sign(issue.imageUrl),
+        verificationImages: issue.verificationImages
+          ? await Promise.all(issue.verificationImages.map(async (u) => (await sign(u)) ?? u))
+          : undefined,
+      }))
+    );
 
     return {
       statusCode: 200,
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
       body: JSON.stringify({
-        issues: issues.map((issue: Issue) => ({
+        issues: issues.map((issue: Issue, i: number) => ({
           id: issue.id,
           title: issue.title,
           category: issue.category,
           riskBand: issue.riskAssessment.riskBand,
           riskScore: issue.riskAssessment.riskScore,
+          likelihood: issue.riskAssessment.likelihood,
+          impact: issue.riskAssessment.impact,
           zone: issue.zone,
           status: issue.status,
           assignedTo: issue.assignedTo,
           createdAt: issue.createdAt,
           updatedAt: issue.updatedAt,
           resolvedAt: issue.resolvedAt,
+          imageUrl: signed[i]?.imageUrl,
+          evidenceBoxes: issue.evidenceBoxes,
+          auditTrail: issue.auditTrail,
+          verificationImages: signed[i]?.verificationImages,
         })),
         count: issues.length,
       }),
@@ -225,13 +272,18 @@ async function handleListIssues(event: RequestEvent) {
 /**
  * POST /issues/{id}/verify - Verify fix with after image
  */
-async function handleVerifyFix(event: RequestEvent) {
+async function handleVerifyFix(event: RequestEvent, path: string) {
   try {
     if (!event.body) {
       return errorResponse(400, 'Request body required');
     }
 
-    const issueId = event.pathParameters?.id;
+    // Lambda Function URLs do not populate pathParameters. `path` already has a
+    // leading /api removed, so segment 2 is the issue id for both
+    // /issues/{id}/verify and /api/issues/{id}/verify.
+    const issueId =
+      event.pathParameters?.id ??
+      decodeURIComponent(path.split('/')[2] ?? '');
     if (!issueId) {
       return errorResponse(400, 'Issue ID required in path');
     }
@@ -239,6 +291,7 @@ async function handleVerifyFix(event: RequestEvent) {
     const body = JSON.parse(event.body) as {
       afterImage: string;
       provider?: 'meta' | 'baseten';
+      returnOverlay?: boolean;
     };
 
     if (!body.afterImage) {
@@ -252,6 +305,7 @@ async function handleVerifyFix(event: RequestEvent) {
     const metaApiKey = getResourceValue('MetaApiKey');
     const basetenApiKey = getResourceValue('BasetenApiKey');
     const issuesTableName = getResourceValue('IssuesTable');
+    const imagesBucketName = getResourceValue('ImagesBucket');
 
     const issueStore = new DynamoDBIssueStore(issuesTableName);
 
@@ -260,6 +314,11 @@ async function handleVerifyFix(event: RequestEvent) {
     if (!issue) {
       return errorResponse(404, 'Issue not found');
     }
+
+    // Upload after image to S3
+    const s3Storage = new S3Storage({ bucketName: imagesBucketName });
+    const afterImageKey = await s3Storage.uploadImage(afterImageBuffer, 'image/jpeg', 'verifications');
+    const afterImageUrl = s3Storage.getPublicUrl(afterImageKey);
 
     // Recreate pipeline (we need to infer the rule pack - use construction as default)
     const { samProvider, sparkProvider } = createProviders(
@@ -286,13 +345,34 @@ async function handleVerifyFix(event: RequestEvent) {
     const verification = await agent.verifyFix(
       issueId,
       afterImageBuffer,
-      `s3://images/verify-${Date.now()}.jpg`
+      afterImageUrl
     );
+
+    // Render overlay for after image
+    let overlayUrl: string | undefined;
+    // Re-running detection doubles latency; only do it when explicitly asked.
+    const afterFindings = body.returnOverlay === true ? await pipeline.detect(afterImageBuffer) : [];
+    if (afterFindings.length > 0) {
+      const boxes = afterFindings.flatMap(f => f.evidenceBoxes);
+      const labels = afterFindings.flatMap(f => 
+        f.evidenceBoxes.map(() => f.rule.title)
+      );
+      
+      if (boxes.length > 0) {
+        const overlayBuffer = await renderDetectionBoxes(afterImageBuffer, boxes, labels);
+        const overlayKey = await s3Storage.uploadImage(overlayBuffer, 'image/png', 'overlays');
+        overlayUrl = s3Storage.getPublicUrl(overlayKey);
+      }
+    }
 
     return {
       statusCode: 200,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(verification),
+      headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
+      body: JSON.stringify({
+        ...verification,
+        afterImageUrl,
+        overlayUrl,
+      }),
     };
   } catch (error) {
     return errorResponse(500, error instanceof Error ? error.message : 'Unknown error');
@@ -334,7 +414,7 @@ async function handleVoiceReport(event: RequestEvent) {
 
     return {
       statusCode: 200,
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
       body: JSON.stringify({
         transcription: transcription.text,
         siteId,
@@ -427,7 +507,30 @@ function createProviders(
 function errorResponse(statusCode: number, message: string) {
   return {
     statusCode,
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
     body: JSON.stringify({ error: message }),
   };
+}
+
+/**
+ * Helper: turn a URL/key for an object in our private bucket into a presigned GET URL.
+ */
+async function presignIfOwned(
+  s3Storage: S3Storage,
+  bucketName: string,
+  url?: string
+): Promise<string | undefined> {
+  if (!url || !bucketName) return url;
+  try {
+    let key: string | undefined;
+    if (!url.startsWith('http')) {
+      key = url;
+    } else {
+      const u = new URL(url);
+      if (u.hostname.startsWith(`${bucketName}.s3`)) key = decodeURIComponent(u.pathname.slice(1));
+    }
+    return key ? await s3Storage.getPresignedUrl(key, 6 * 3600) : url;
+  } catch {
+    return url;
+  }
 }

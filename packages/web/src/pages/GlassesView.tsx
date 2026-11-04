@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { apiClient } from '../api';
+import { apiClient, SITE_ID } from '../api';
 import type { Issue } from '../types';
 
 const GlassesView = () => {
@@ -54,8 +54,10 @@ const GlassesView = () => {
 
     if (!context) return;
 
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
+    // Downscale to <=1280px on the long edge to keep the request body small.
+    const scale = Math.min(1, 1280 / Math.max(video.videoWidth, video.videoHeight));
+    canvas.width = Math.round(video.videoWidth * scale);
+    canvas.height = Math.round(video.videoHeight * scale);
     context.drawImage(video, 0, 0, canvas.width, canvas.height);
 
     return new Promise<string>((resolve) => {
@@ -67,7 +69,7 @@ const GlassesView = () => {
           };
           reader.readAsDataURL(blob);
         }
-      }, 'image/jpeg', 0.8);
+      }, 'image/jpeg', 0.7);
     });
   }, []);
 
@@ -82,7 +84,7 @@ const GlassesView = () => {
         image: imageData,
         rulePackId: 'construction',
         zone: 'site-main',
-        siteId: 'demo-site',
+        siteId: SITE_ID,
         returnOverlay: false,
       });
 
@@ -237,7 +239,7 @@ const GlassesView = () => {
                 setStatus('Transcribing...');
                 const response = await apiClient.transcribeVoice({
                   audio: base64Audio,
-                  siteId: 'demo-site',
+                  siteId: SITE_ID,
                   zone: 'site-main',
                 });
                 setStatus(`Transcribed: ${response.transcription}`);
@@ -278,6 +280,21 @@ const GlassesView = () => {
     setStatus(`Verify mode: ${issueId.slice(0, 8)}`);
   };
 
+  const pollVerification = async (issueId: string): Promise<boolean | null> => {
+    for (let attempt = 0; attempt < 30; attempt++) {
+      await new Promise((r) => setTimeout(r, 4000));
+      try {
+        const { issues } = await apiClient.listIssues({ siteId: SITE_ID });
+        const issue = issues.find((i) => i.id === issueId);
+        if (issue?.status === 'resolved' || issue?.status === 'closed') return true;
+        if (issue?.status === 'reopened') return false;
+      } catch {
+        // keep polling
+      }
+    }
+    return null;
+  };
+
   const captureVerification = async () => {
     if (!verifyMode) return;
 
@@ -286,19 +303,33 @@ const GlassesView = () => {
       const imageData = await captureFrame();
       if (!imageData) return;
 
-      const response = await apiClient.verifyFix(verifyMode, {
-        afterImage: imageData,
-        provider: 'meta',
-      });
+      const issueId = verifyMode;
+      let resolved: boolean | null = null;
+      try {
+        const response = await apiClient.verifyFix(issueId, {
+          afterImage: imageData,
+          provider: 'meta',
+        });
+        resolved = response.resolved;
+      } catch (error) {
+        // The request may time out/drop while the backend still finishes.
+        // Fall back to polling the issue status until it reaches a terminal state.
+        console.warn('Verify request failed, polling issue status:', error);
+        setStatus('Verifying fix... (checking status)');
+        resolved = await pollVerification(issueId);
+      }
 
-      setStatus(response.resolved ? 'Fix verified ✓' : 'Issue persists ✗');
-      speakAlert(response.resolved ? 'Fix verified' : 'Issue persists');
       setVerifyMode(null);
-
-      // Refresh issues
-      void inspectFrame();
+      if (resolved === null) {
+        setStatus('Verification still pending - check Dashboard');
+        return;
+      }
+      setStatus(resolved ? 'Fix verified ✓' : 'Issue persists ✗ (reopened)');
+      speakAlert(resolved ? 'Fix verified' : 'Issue persists');
+      setCurrentIssues((prev) => prev.filter((i) => !(resolved && i.id === issueId)));
     } catch (error) {
       console.error('Verification failed:', error);
+      setVerifyMode(null);
       setStatus('Verification failed');
     }
   };
