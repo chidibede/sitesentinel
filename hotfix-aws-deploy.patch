@@ -1,0 +1,387 @@
+From 44785e9d5f602a479283ae886c9b21e85c42301a Mon Sep 17 00:00:00 2001
+From: Chidi Enwereji <chidibede@users.noreply.github.com>
+Date: Wed, 4 Nov 2026 23:24:02 +0100
+Subject: [PATCH] fix(aws): inspect timeout, issues list filter, verify
+ polling, presigned evidence URLs
+
+---
+ infra/api.ts                                | 54 +++++++++++++++---
+ packages/core/src/storage/dynamodb-store.ts | 13 ++++-
+ packages/web/src/api.ts                     | 14 +++--
+ packages/web/src/pages/Dashboard.tsx        |  5 +-
+ packages/web/src/pages/GlassesView.tsx      | 61 ++++++++++++++++-----
+ sst.config.ts                               | 13 +++--
+ 6 files changed, 126 insertions(+), 34 deletions(-)
+
+diff --git a/infra/api.ts b/infra/api.ts
+index 83edf2d..c583264 100644
+--- a/infra/api.ts
++++ b/infra/api.ts
+@@ -25,6 +25,8 @@ interface RequestEvent {
+   queryStringParameters?: Record<string, string>;
+ }
+ 
++const DEFAULT_SITE_ID = 'demo-site';
++
+ const CORS_HEADERS = {
+   'Access-Control-Allow-Origin': '*',
+   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+@@ -118,7 +120,7 @@ async function handleInspect(event: RequestEvent) {
+     const imageBuffer = decodeImageData(body.image);
+     const rulePackId = body.rulePackId ?? 'construction';
+     const zone = body.zone ?? 'site-main';
+-    const siteId = body.siteId ?? 'default-site';
++    const siteId = body.siteId ?? DEFAULT_SITE_ID;
+     const provider = body.provider ?? 'meta';
+ 
+     // Get resources
+@@ -209,18 +211,28 @@ async function handleListIssues(event: RequestEvent) {
+ 
+     // Parse query parameters from Lambda event
+     const params = event.queryStringParameters ?? {};
+-    const siteId = params.siteId ?? undefined;
++    const siteId = params.siteId ?? (params.status ? undefined : DEFAULT_SITE_ID);
+     const statusParam = params.status;
+     const status = (statusParam as 'open' | 'assigned' | 'in-progress' | 'pending-verification' | 'resolved' | 'reopened' | 'closed' | undefined) ?? undefined;
+     const zone = params.zone ?? undefined;
+ 
+     const issues = await issueStore.list({ siteId, status, zone });
++    const s3Storage = new S3Storage({ bucketName: getResourceValue('ImagesBucket') });
++    const sign = (url?: string) => presignIfOwned(s3Storage, getResourceValue('ImagesBucket'), url);
++    const signed = await Promise.all(
++      issues.map(async (issue: Issue) => ({
++        imageUrl: await sign(issue.imageUrl),
++        verificationImages: issue.verificationImages
++          ? await Promise.all(issue.verificationImages.map(async (u) => (await sign(u)) ?? u))
++          : undefined,
++      }))
++    );
+ 
+     return {
+       statusCode: 200,
+       headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
+       body: JSON.stringify({
+-        issues: issues.map((issue: Issue) => ({
++        issues: issues.map((issue: Issue, i: number) => ({
+           id: issue.id,
+           title: issue.title,
+           category: issue.category,
+@@ -234,10 +246,10 @@ async function handleListIssues(event: RequestEvent) {
+           createdAt: issue.createdAt,
+           updatedAt: issue.updatedAt,
+           resolvedAt: issue.resolvedAt,
+-          imageUrl: issue.imageUrl,
++          imageUrl: signed[i]?.imageUrl,
+           evidenceBoxes: issue.evidenceBoxes,
+           auditTrail: issue.auditTrail,
+-          verificationImages: issue.verificationImages,
++          verificationImages: signed[i]?.verificationImages,
+         })),
+         count: issues.length,
+       }),
+@@ -256,7 +268,10 @@ async function handleVerifyFix(event: RequestEvent) {
+       return errorResponse(400, 'Request body required');
+     }
+ 
+-    const issueId = event.pathParameters?.id;
++    // Lambda Function URLs do not populate pathParameters; parse from the path.
++    const issueId =
++      event.pathParameters?.id ??
++      decodeURIComponent(event.requestContext.http.path.split('/')[2] ?? '');
+     if (!issueId) {
+       return errorResponse(400, 'Issue ID required in path');
+     }
+@@ -264,6 +279,7 @@ async function handleVerifyFix(event: RequestEvent) {
+     const body = JSON.parse(event.body) as {
+       afterImage: string;
+       provider?: 'meta' | 'baseten';
++      returnOverlay?: boolean;
+     };
+ 
+     if (!body.afterImage) {
+@@ -322,7 +338,8 @@ async function handleVerifyFix(event: RequestEvent) {
+ 
+     // Render overlay for after image
+     let overlayUrl: string | undefined;
+-    const afterFindings = await pipeline.detect(afterImageBuffer);
++    // Re-running detection doubles latency; only do it when explicitly asked.
++    const afterFindings = body.returnOverlay === true ? await pipeline.detect(afterImageBuffer) : [];
+     if (afterFindings.length > 0) {
+       const boxes = afterFindings.flatMap(f => f.evidenceBoxes);
+       const labels = afterFindings.flatMap(f => 
+@@ -460,3 +477,26 @@ function errorResponse(statusCode: number, message: string) {
+     body: JSON.stringify({ error: message }),
+   };
+ }
++
++/**
++ * Helper: turn a URL/key for an object in our private bucket into a presigned GET URL.
++ */
++async function presignIfOwned(
++  s3Storage: S3Storage,
++  bucketName: string,
++  url?: string
++): Promise<string | undefined> {
++  if (!url || !bucketName) return url;
++  try {
++    let key: string | undefined;
++    if (!url.startsWith('http')) {
++      key = url;
++    } else {
++      const u = new URL(url);
++      if (u.hostname.startsWith(`${bucketName}.s3`)) key = decodeURIComponent(u.pathname.slice(1));
++    }
++    return key ? await s3Storage.getPresignedUrl(key, 6 * 3600) : url;
++  } catch {
++    return url;
++  }
++}
+diff --git a/packages/core/src/storage/dynamodb-store.ts b/packages/core/src/storage/dynamodb-store.ts
+index c951ba6..d092ad0 100644
+--- a/packages/core/src/storage/dynamodb-store.ts
++++ b/packages/core/src/storage/dynamodb-store.ts
+@@ -8,6 +8,7 @@ import {
+   PutCommand,
+   GetCommand,
+   QueryCommand,
++  ScanCommand,
+   UpdateCommand,
+ } from '@aws-sdk/lib-dynamodb';
+ import type { IssueStore, Issue, IssueStatus, AuditEntry } from '../agent/issue-manager.js';
+@@ -82,7 +83,9 @@ export class DynamoDBIssueStore implements IssueStore {
+         new QueryCommand({
+           TableName: this.tableName,
+           IndexName: 'byStatus',
+-          KeyConditionExpression: 'status = :status',
++          // `status` is a DynamoDB reserved word
++          KeyConditionExpression: '#status = :status',
++          ExpressionAttributeNames: { '#status': 'status' },
+           ExpressionAttributeValues: {
+             ':status': filters.status,
+           },
+@@ -99,7 +102,13 @@ export class DynamoDBIssueStore implements IssueStore {
+       return items;
+     }
+ 
+-    throw new Error('List operation requires at least siteId or status filter');
++    // No siteId/status filter: fall back to a scan (demo-sized table).
++    const result = await this.client.send(new ScanCommand({ TableName: this.tableName }));
++    let items = (result.Items as Issue[] | undefined) ?? [];
++    if (filters?.zone) {
++      items = items.filter((i) => i.zone === filters.zone);
++    }
++    return items.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+   }
+ 
+   async update(id: string, updates: Partial<Issue>): Promise<void> {
+diff --git a/packages/web/src/api.ts b/packages/web/src/api.ts
+index d6b2781..220c387 100644
+--- a/packages/web/src/api.ts
++++ b/packages/web/src/api.ts
+@@ -46,7 +46,7 @@ class ApiClient {
+     const response = await fetch(url);
+ 
+     if (!response.ok) {
+-      const error = await response.json() as { error?: string };
++      const error = await response.json().catch(() => ({})) as { error?: string };
+       throw new Error(error.error ?? 'Failed to fetch issues');
+     }
+ 
+@@ -54,15 +54,19 @@ class ApiClient {
+   }
+ 
+   async verifyFix(issueId: string, request: VerifyRequest): Promise<VerifyResponse> {
++    // Verification runs the full model pipeline; don't let the request hang forever.
++    const controller = new AbortController();
++    const timer = setTimeout(() => { controller.abort(); }, 150_000);
+     const response = await fetch(`${this.baseUrl}/issues/${issueId}/verify`, {
+       method: 'POST',
++      signal: controller.signal,
+       headers: { 'Content-Type': 'application/json' },
+       body: JSON.stringify(request),
+-    });
++    }).finally(() => { clearTimeout(timer); });
+ 
+     if (!response.ok) {
+-      const error = await response.json() as { error?: string };
+-      throw new Error(error.error ?? 'Verification failed');
++      const error = await response.json().catch(() => ({})) as { error?: string };
++      throw new Error(error.error ?? `Verification failed (${String(response.status)})`);
+     }
+ 
+     return response.json() as Promise<VerifyResponse>;
+@@ -84,4 +88,6 @@ class ApiClient {
+   }
+ }
+ 
++export const SITE_ID = 'demo-site';
++
+ export const apiClient = new ApiClient(API_URL);
+diff --git a/packages/web/src/pages/Dashboard.tsx b/packages/web/src/pages/Dashboard.tsx
+index f744dae..3f88e13 100644
+--- a/packages/web/src/pages/Dashboard.tsx
++++ b/packages/web/src/pages/Dashboard.tsx
+@@ -1,5 +1,5 @@
+ import { useEffect, useState } from 'react';
+-import { apiClient } from '../api';
++import { apiClient, SITE_ID } from '../api';
+ import type { Issue, IssueStatus, RiskBand } from '../types';
+ 
+ const Dashboard = () => {
+@@ -17,7 +17,8 @@ const Dashboard = () => {
+     try {
+       setLoading(true);
+       setApiError(null);
+-      const filters = statusFilter !== 'all' ? { status: statusFilter } : {};
++      const filters =
++        statusFilter !== 'all' ? { siteId: SITE_ID, status: statusFilter } : { siteId: SITE_ID };
+       const response = await apiClient.listIssues(filters);
+       setIssues(response.issues);
+     } catch (error) {
+diff --git a/packages/web/src/pages/GlassesView.tsx b/packages/web/src/pages/GlassesView.tsx
+index 3d416cd..a83d927 100644
+--- a/packages/web/src/pages/GlassesView.tsx
++++ b/packages/web/src/pages/GlassesView.tsx
+@@ -1,5 +1,5 @@
+ import { useEffect, useRef, useState, useCallback } from 'react';
+-import { apiClient } from '../api';
++import { apiClient, SITE_ID } from '../api';
+ import type { Issue } from '../types';
+ 
+ const GlassesView = () => {
+@@ -54,8 +54,10 @@ const GlassesView = () => {
+ 
+     if (!context) return;
+ 
+-    canvas.width = video.videoWidth;
+-    canvas.height = video.videoHeight;
++    // Downscale to <=1280px on the long edge to keep the request body small.
++    const scale = Math.min(1, 1280 / Math.max(video.videoWidth, video.videoHeight));
++    canvas.width = Math.round(video.videoWidth * scale);
++    canvas.height = Math.round(video.videoHeight * scale);
+     context.drawImage(video, 0, 0, canvas.width, canvas.height);
+ 
+     return new Promise<string>((resolve) => {
+@@ -67,7 +69,7 @@ const GlassesView = () => {
+           };
+           reader.readAsDataURL(blob);
+         }
+-      }, 'image/jpeg', 0.8);
++      }, 'image/jpeg', 0.7);
+     });
+   }, []);
+ 
+@@ -82,7 +84,7 @@ const GlassesView = () => {
+         image: imageData,
+         rulePackId: 'construction',
+         zone: 'site-main',
+-        siteId: 'demo-site',
++        siteId: SITE_ID,
+         returnOverlay: false,
+       });
+ 
+@@ -237,7 +239,7 @@ const GlassesView = () => {
+                 setStatus('Transcribing...');
+                 const response = await apiClient.transcribeVoice({
+                   audio: base64Audio,
+-                  siteId: 'demo-site',
++                  siteId: SITE_ID,
+                   zone: 'site-main',
+                 });
+                 setStatus(`Transcribed: ${response.transcription}`);
+@@ -278,6 +280,21 @@ const GlassesView = () => {
+     setStatus(`Verify mode: ${issueId.slice(0, 8)}`);
+   };
+ 
++  const pollVerification = async (issueId: string): Promise<boolean | null> => {
++    for (let attempt = 0; attempt < 30; attempt++) {
++      await new Promise((r) => setTimeout(r, 4000));
++      try {
++        const { issues } = await apiClient.listIssues({ siteId: SITE_ID });
++        const issue = issues.find((i) => i.id === issueId);
++        if (issue?.status === 'resolved' || issue?.status === 'closed') return true;
++        if (issue?.status === 'reopened') return false;
++      } catch {
++        // keep polling
++      }
++    }
++    return null;
++  };
++
+   const captureVerification = async () => {
+     if (!verifyMode) return;
+ 
+@@ -286,19 +303,33 @@ const GlassesView = () => {
+       const imageData = await captureFrame();
+       if (!imageData) return;
+ 
+-      const response = await apiClient.verifyFix(verifyMode, {
+-        afterImage: imageData,
+-        provider: 'meta',
+-      });
++      const issueId = verifyMode;
++      let resolved: boolean | null = null;
++      try {
++        const response = await apiClient.verifyFix(issueId, {
++          afterImage: imageData,
++          provider: 'meta',
++        });
++        resolved = response.resolved;
++      } catch (error) {
++        // The request may time out/drop while the backend still finishes.
++        // Fall back to polling the issue status until it reaches a terminal state.
++        console.warn('Verify request failed, polling issue status:', error);
++        setStatus('Verifying fix... (checking status)');
++        resolved = await pollVerification(issueId);
++      }
+ 
+-      setStatus(response.resolved ? 'Fix verified ✓' : 'Issue persists ✗');
+-      speakAlert(response.resolved ? 'Fix verified' : 'Issue persists');
+       setVerifyMode(null);
+-
+-      // Refresh issues
+-      void inspectFrame();
++      if (resolved === null) {
++        setStatus('Verification still pending - check Dashboard');
++        return;
++      }
++      setStatus(resolved ? 'Fix verified ✓' : 'Issue persists ✗ (reopened)');
++      speakAlert(resolved ? 'Fix verified' : 'Issue persists');
++      setCurrentIssues((prev) => prev.filter((i) => !(resolved && i.id === issueId)));
+     } catch (error) {
+       console.error('Verification failed:', error);
++      setVerifyMode(null);
+       setStatus('Verification failed');
+     }
+   };
+diff --git a/sst.config.ts b/sst.config.ts
+index b881e42..ca0d436 100644
+--- a/sst.config.ts
++++ b/sst.config.ts
+@@ -38,14 +38,19 @@ export default $config({
+     });
+ 
+     // S3 bucket for images and overlays
+-    const imagesBucket = new sst.aws.Bucket('ImagesBucket', {
+-      public: true,
+-    });
++    // Private bucket: the API returns presigned GET URLs for evidence images.
++    const imagesBucket = new sst.aws.Bucket('ImagesBucket');
+ 
+     // API Lambda function
+     const api = new sst.aws.Function('Api', {
+       handler: 'infra/api.handler',
+-      url: true,
++      // Function URL (no API Gateway 29s cap). CORS is handled in the handler
++      // itself, so disable URL-level CORS to avoid duplicate CORS headers.
++      url: { cors: false },
++      // Inspect/verify call SAM + Muse Spark and take ~20-60s; the SST default
++      // of 20s made /inspect return 502 on AWS.
++      timeout: '120 seconds',
++      memory: '1536 MB',
+       link: [basetenApiKey, metaApiKey, issuesTable, imagesBucket],
+       environment: {
+         NODE_ENV: 'production',
+-- 
+2.47.3
+
