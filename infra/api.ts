@@ -4,6 +4,7 @@
  * Lambda function with agentic workflow endpoints
  */
 
+import { createHash, timingSafeEqual } from 'crypto';
 import { Resource } from 'sst';
 import { HazardDetectionPipeline } from '@sitesentinel/core/src/pipeline/hazard-detection-v2.js';
 import { MetaModelAPIProvider } from '@sitesentinel/core/src/models/meta-model-api.js';
@@ -19,6 +20,7 @@ import { renderDetectionBoxes } from '@sitesentinel/core/src/pipeline/overlay-re
 
 interface RequestEvent {
   requestContext: { http: { method: string; path: string } };
+  headers?: Record<string, string | undefined>;
   body?: string;
   pathParameters?: Record<string, string>;
   rawQueryString?: string;
@@ -34,7 +36,15 @@ const CORS_HEADERS = {
 };
 
 export async function handler(event: RequestEvent) {
-  const { method, path } = event.requestContext.http;
+  if (!isAuthorized(event)) {
+    return errorResponse(401, 'Unauthorized');
+  }
+
+  const { method } = event.requestContext.http;
+  let path = event.requestContext.http.path;
+  if (path === '/api' || path.startsWith('/api/')) {
+    path = path.slice('/api'.length) || '/';
+  }
 
   // Handle preflight
   if (method === 'OPTIONS') {
@@ -71,7 +81,7 @@ export async function handler(event: RequestEvent) {
 
   // POST /issues/{id}/verify - Verify fix
   if (method === 'POST' && path.startsWith('/issues/') && path.endsWith('/verify')) {
-    return await handleVerifyFix(event);
+    return await handleVerifyFix(event, path);
   }
 
   // POST /reports/voice - Voice report transcription
@@ -262,16 +272,18 @@ async function handleListIssues(event: RequestEvent) {
 /**
  * POST /issues/{id}/verify - Verify fix with after image
  */
-async function handleVerifyFix(event: RequestEvent) {
+async function handleVerifyFix(event: RequestEvent, path: string) {
   try {
     if (!event.body) {
       return errorResponse(400, 'Request body required');
     }
 
-    // Lambda Function URLs do not populate pathParameters; parse from the path.
+    // Lambda Function URLs do not populate pathParameters. `path` already has a
+    // leading /api removed, so segment 2 is the issue id for both
+    // /issues/{id}/verify and /api/issues/{id}/verify.
     const issueId =
       event.pathParameters?.id ??
-      decodeURIComponent(event.requestContext.http.path.split('/')[2] ?? '');
+      decodeURIComponent(path.split('/')[2] ?? '');
     if (!issueId) {
       return errorResponse(400, 'Issue ID required in path');
     }
@@ -427,6 +439,28 @@ function decodeImageData(imageData: string): Buffer {
   return Buffer.from(base64, 'base64');
   }
   return Buffer.from(imageData, 'base64');
+}
+
+/**
+ * Every route requires the x-api-key header to match the ApiKey secret.
+ * Missing or empty configuration fails closed.
+ */
+function isAuthorized(event: RequestEvent): boolean {
+  const expected = getResourceValue('ApiKey');
+  if (!expected) return false;
+
+  const provided = headerValue(event, 'x-api-key');
+  const providedHash = createHash('sha256').update(provided).digest();
+  const expectedHash = createHash('sha256').update(expected).digest();
+  return timingSafeEqual(providedHash, expectedHash);
+}
+
+function headerValue(event: RequestEvent, name: string): string {
+  const headers = event.headers ?? {};
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === name && value) return value;
+  }
+  return '';
 }
 
 /**

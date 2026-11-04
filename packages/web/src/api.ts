@@ -8,6 +8,7 @@ import type {
   VoiceReportResponse,
 } from './types';
 
+// Same-origin /api in production. CloudFront attaches the API key; the browser never sees it.
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
 class ApiClient {

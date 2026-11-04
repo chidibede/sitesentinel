@@ -355,6 +355,10 @@ The deploy command will output:
 
 ## API Endpoints
 
+Direct calls to the function URL must include the `x-api-key` header. The value is the `ApiKey` secret (`npx sst secret set ApiKey <key> --stage prod`). Requests without the right key get `401 Unauthorized`.
+
+The website does not include that key. It calls `/api` on the CloudFront host, and CloudFront adds the header before the request reaches Lambda.
+
 ### POST /inspect
 Creates issues from image inspection.
 

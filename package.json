@@ -19,6 +19,15 @@
     "inspect": "tsx packages/core/scripts/inspect.ts",
     "loop": "tsx packages/core/scripts/agent-loop.ts"
   },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.709.0",
+    "@aws-sdk/client-s3": "^3.709.0",
+    "@aws-sdk/lib-dynamodb": "^3.709.0",
+    "@aws-sdk/s3-request-presigner": "^3.709.0",
+    "aws4fetch": "^1.0.18",
+    "openai": "^4.77.0",
+    "sharp": "^0.33.5"
+  },
   "devDependencies": {
     "@eslint/js": "^9.15.0",
     "@types/node": "^22.10.0",
