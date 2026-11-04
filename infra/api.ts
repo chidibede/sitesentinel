@@ -4,6 +4,7 @@
  * Lambda function with agentic workflow endpoints
  */
 
+import { createHash, timingSafeEqual } from 'crypto';
 import { Resource } from 'sst';
 import { HazardDetectionPipeline } from '@sitesentinel/core/src/pipeline/hazard-detection-v2.js';
 import { MetaModelAPIProvider } from '@sitesentinel/core/src/models/meta-model-api.js';
@@ -17,6 +18,7 @@ import { MuseVoiceTranscribe } from '@sitesentinel/core/src/agent/voice-services
 
 interface RequestEvent {
   requestContext: { http: { method: string; path: string } };
+  headers?: Record<string, string | undefined>;
   body?: string;
   pathParameters?: Record<string, string>;
   rawQueryString?: string;
@@ -24,7 +26,15 @@ interface RequestEvent {
 }
 
 export async function handler(event: RequestEvent) {
-  const { method, path } = event.requestContext.http;
+  if (!isAuthorized(event)) {
+    return errorResponse(401, 'Unauthorized');
+  }
+
+  const { method } = event.requestContext.http;
+  let path = event.requestContext.http.path;
+  if (path === '/api' || path.startsWith('/api/')) {
+    path = path.slice('/api'.length) || '/';
+  }
 
   // Health check
   if (method === 'GET' && path === '/health') {
@@ -349,6 +359,28 @@ function decodeImageData(imageData: string): Buffer {
   return Buffer.from(base64, 'base64');
   }
   return Buffer.from(imageData, 'base64');
+}
+
+/**
+ * Every route requires the x-api-key header to match the ApiKey secret.
+ * Missing or empty configuration fails closed.
+ */
+function isAuthorized(event: RequestEvent): boolean {
+  const expected = getResourceValue('ApiKey');
+  if (!expected) return false;
+
+  const provided = headerValue(event, 'x-api-key');
+  const providedHash = createHash('sha256').update(provided).digest();
+  const expectedHash = createHash('sha256').update(expected).digest();
+  return timingSafeEqual(providedHash, expectedHash);
+}
+
+function headerValue(event: RequestEvent, name: string): string {
+  const headers = event.headers ?? {};
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === name && value) return value;
+  }
+  return '';
 }
 
 /**
